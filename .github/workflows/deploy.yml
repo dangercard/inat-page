@@ -1,0 +1,19 @@
+name: Daily Cloudflare rebuild
+
+# Cloudflare Pages auto-builds on every push to main.
+# This workflow only triggers the daily rebuild that pulls fresh iNaturalist data.
+# Requires repo secret: CLOUDFLARE_DEPLOY_HOOK (full webhook URL from
+# Cloudflare Pages > Settings > Builds & deployments > Create deploy hook)
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit Cloudflare deploy hook
+        run: curl -fsS -X POST "$DEPLOY_HOOK"
+        env:
+          DEPLOY_HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}
