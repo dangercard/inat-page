@@ -1,92 +1,171 @@
 ---
 import Base from "../layouts/Base.astro";
 import { fetchAllObservations, photoUrl } from "../lib/inaturalist";
+import type { Observation } from "../lib/inaturalist";
 
 const observations = await fetchAllObservations("alejandrodeloach");
 const withPhotos = observations.filter((o) => o.photos.length > 0);
 
-// Flatten: one entry per photo, tagged with its position within the observation.
-const photoList = withPhotos.flatMap((obs) =>
-  obs.photos.map((photo, i) => ({
-    src: photoUrl(photo, "large"),
-    common: obs.taxon?.preferred_common_name ?? obs.species_guess ?? "Unknown",
-    scientific: obs.taxon?.name ?? null,
-    date: obs.observed_on,
-    place: obs.place_guess,
-    uri: obs.uri,
-    attribution: photo.attribution,
-    photoIndex: i + 1,
-    photoCount: obs.photos.length,
-  }))
+const tabs = [
+  {
+    key: "wild",
+    label: "Wild",
+    obs: withPhotos.filter((o) => o.quality_grade !== "casual"),
+  },
+  {
+    key: "casual",
+    label: "Cultivated / Captive",
+    obs: withPhotos.filter((o) => o.quality_grade === "casual"),
+  },
+] as const;
+
+function buildPhotoList(list: Observation[]) {
+  return list.flatMap((obs) =>
+    obs.photos.map((photo, i) => ({
+      src: photoUrl(photo, "large"),
+      common:
+        obs.taxon?.preferred_common_name ?? obs.species_guess ?? "Unknown",
+      scientific: obs.taxon?.name ?? null,
+      date: obs.observed_on,
+      place: obs.place_guess,
+      uri: obs.uri,
+      attribution: photo.attribution,
+      photoIndex: i + 1,
+      photoCount: obs.photos.length,
+      researchGrade: obs.quality_grade === "research",
+    })),
+  );
+}
+
+function buildCardStart(list: Observation[]) {
+  let running = 0;
+  return list.map((obs) => {
+    const start = running;
+    running += obs.photos.length;
+    return start;
+  });
+}
+
+const photoLists = Object.fromEntries(
+  tabs.map((t) => [t.key, buildPhotoList(t.obs)]),
 );
-
-// Index in `photoList` where each observation's first photo lives.
-let running = 0;
-const cardStart = withPhotos.map((obs) => {
-  const start = running;
-  running += obs.photos.length;
-  return start;
-});
+const cardStarts = Object.fromEntries(
+  tabs.map((t) => [t.key, buildCardStart(t.obs)]),
+);
 ---
-<Base title="A. Deloach — Observations">
-  <p class="count">{withPhotos.length} observations</p>
-  <ul class="grid">
-    {withPhotos.map((obs, i) => {
-      const photo = obs.photos[0];
-      const common = obs.taxon?.preferred_common_name ?? obs.species_guess ?? "Unknown";
-      const scientific = obs.taxon?.name;
-      return (
-        <li class="card">
-          <a href={obs.uri} target="_blank" rel="noopener" data-card-index={cardStart[i]}>
-            <div class="thumb">
-              <img
-                src={photoUrl(photo, "medium")}
-                alt={common}
-                loading="lazy"
-                width={photo.original_dimensions?.width ?? 500}
-                height={photo.original_dimensions?.height ?? 500}
-              />
-              {obs.photos.length > 1 && <span class="badge">+{obs.photos.length - 1}</span>}
-            </div>
-            <div class="caption">
-              <span class="common">{common}</span>
-              {scientific && <span class="sci">{scientific}</span>}
-              {obs.observed_on && <time>{obs.observed_on}</time>}
-            </div>
-          </a>
-        </li>
-      );
-    })}
-  </ul>
 
-  <div id="lightbox" class="lightbox" aria-modal="true" role="dialog" aria-label="Observation viewer">
-    <button class="lb-close" id="lightbox-close" aria-label="Close">&times;</button>
-    <button class="lb-nav lb-prev" id="lightbox-prev" aria-label="Previous">&larr;</button>
-    <button class="lb-nav lb-next" id="lightbox-next" aria-label="Next">&rarr;</button>
+<Base title="A. Deloach — Observations">
+  <div class="tabs" role="tablist">
+    {
+      tabs.map((t, idx) => (
+        <button
+          class={`tab ${idx === 0 ? "active" : ""}`}
+          data-tab={t.key}
+          role="tab"
+          aria-selected={idx === 0 ? "true" : "false"}
+        >
+          {t.label} <span class="tab-count">{t.obs.length}</span>
+        </button>
+      ))
+    }
+  </div>
+
+  {
+    tabs.map((t, idx) => (
+      <ul class="grid" data-tab={t.key} hidden={idx !== 0}>
+        {t.obs.map((obs, i) => {
+          const photo = obs.photos[0];
+          const common =
+            obs.taxon?.preferred_common_name ?? obs.species_guess ?? "Unknown";
+          const scientific = obs.taxon?.name;
+          return (
+            <li class="card">
+              <a
+                href={obs.uri}
+                target="_blank"
+                rel="noopener"
+                data-card-index={cardStarts[t.key][i]}
+                data-card-tab={t.key}
+              >
+                <div class="thumb">
+                  <img
+                    src={photoUrl(photo, "medium")}
+                    alt={common}
+                    loading="lazy"
+                    width={photo.original_dimensions?.width ?? 500}
+                    height={photo.original_dimensions?.height ?? 500}
+                  />
+                  {obs.quality_grade === "research" && (
+                    <span class="badge badge-rg" title="Research grade">
+                      <span aria-hidden="true">✓</span> RG
+                    </span>
+                  )}
+                  {obs.photos.length > 1 && (
+                    <span class="badge">+{obs.photos.length - 1}</span>
+                  )}
+                </div>
+                <div class="caption">
+                  <span class="common">{common}</span>
+                  {scientific && <span class="sci">{scientific}</span>}
+                  {obs.observed_on && <time>{obs.observed_on}</time>}
+                </div>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    ))
+  }
+
+  <div
+    id="lightbox"
+    class="lightbox"
+    aria-modal="true"
+    role="dialog"
+    aria-label="Observation viewer"
+  >
+    <button class="lb-close" id="lightbox-close" aria-label="Close"
+      >&times;</button
+    >
+    <button class="lb-nav lb-prev" id="lightbox-prev" aria-label="Previous"
+      >&larr;</button
+    >
+    <button class="lb-nav lb-next" id="lightbox-next" aria-label="Next"
+      >&rarr;</button
+    >
     <figure class="lb-figure" onclick="event.stopPropagation()">
-      <img id="lightbox-img" alt="" />
+      <div class="lb-img-wrap" id="lightbox-img-wrap">
+        <img id="lightbox-img" alt="" />
+      </div>
       <figcaption class="lb-caption">
         <div class="lb-title">
           <span id="lightbox-common" class="lb-common"></span>
           <span id="lightbox-sci" class="lb-sci"></span>
+          <span id="lightbox-rg" class="lb-rg" hidden>
+            <span aria-hidden="true">✓</span> Research Grade
+          </span>
           <span id="lightbox-counter" class="lb-counter" hidden></span>
         </div>
         <div id="lightbox-meta" class="lb-meta"></div>
         <div class="lb-footer">
           <span id="lightbox-attr" class="lb-attr"></span>
-          <a id="lightbox-link" href="#" target="_blank" rel="noopener">View on iNaturalist &rarr;</a>
+          <a id="lightbox-link" href="#" target="_blank" rel="noopener"
+            >View on iNaturalist &rarr;</a
+          >
         </div>
       </figcaption>
     </figure>
   </div>
 </Base>
 
-<script is:inline define:vars={{ photos: photoList }}>
+<script is:inline define:vars={{ photoLists }}>
   (() => {
     const lightbox = document.getElementById("lightbox");
     const img = document.getElementById("lightbox-img");
+    const imgWrap = document.getElementById("lightbox-img-wrap");
     const common = document.getElementById("lightbox-common");
     const sci = document.getElementById("lightbox-sci");
+    const rg = document.getElementById("lightbox-rg");
     const counter = document.getElementById("lightbox-counter");
     const meta = document.getElementById("lightbox-meta");
     const attr = document.getElementById("lightbox-attr");
@@ -95,27 +174,39 @@ const cardStart = withPhotos.map((obs) => {
     const prevBtn = document.getElementById("lightbox-prev");
     const nextBtn = document.getElementById("lightbox-next");
 
+    let active = null; // current photo list
     let index = 0;
     const preloadCache = new Map();
-    function preload(i) {
-      const j = ((i % photos.length) + photos.length) % photos.length;
-      if (preloadCache.has(j)) return;
-      const im = new Image();
-      im.src = photos[j].src;
-      preloadCache.set(j, im);
+
+    function wrap(i, len) {
+      return ((i % len) + len) % len;
     }
 
-    function show(i) {
-      index = ((i % photos.length) + photos.length) % photos.length;
-      const p = photos[index];
+    function preload(i) {
+      if (!active) return;
+      const j = wrap(i, active.length);
+      const key = `${activeKey}:${j}`;
+      if (preloadCache.has(key)) return;
+      const im = new Image();
+      im.src = active[j].src;
+      preloadCache.set(key, im);
+    }
+
+    let activeKey = null;
+    function show(listKey, i) {
+      active = photoLists[listKey];
+      activeKey = listKey;
+      if (!active || active.length === 0) return;
+      index = wrap(i, active.length);
+      const p = active[index];
       img.src = p.src;
       img.alt = p.common;
-      // Warm the browser cache for likely-next images.
       preload(index + 1);
       preload(index + 2);
       preload(index - 1);
       common.textContent = p.common;
       sci.textContent = p.scientific ?? "";
+      rg.hidden = !p.researchGrade;
       if (p.photoCount > 1) {
         counter.textContent = `${p.photoIndex} / ${p.photoCount}`;
         counter.hidden = false;
@@ -128,13 +219,42 @@ const cardStart = withPhotos.map((obs) => {
       meta.textContent = parts.join(" · ");
       attr.textContent = p.attribution ?? "";
       link.href = p.uri;
+      resetZoom();
       lightbox.classList.add("open");
       document.body.style.overflow = "hidden";
     }
 
+    function resetZoom() {
+      img.classList.remove("zoomed");
+      img.style.transformOrigin = "";
+    }
+
+    function originFromEvent(e) {
+      const rect = imgWrap.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * 100;
+      const y = ((e.clientY - rect.top) / rect.height) * 100;
+      return `${x}% ${y}%`;
+    }
+
+    imgWrap.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (img.classList.contains("zoomed")) {
+        resetZoom();
+      } else {
+        img.style.transformOrigin = originFromEvent(e);
+        img.classList.add("zoomed");
+      }
+    });
+
+    imgWrap.addEventListener("mousemove", (e) => {
+      if (!img.classList.contains("zoomed")) return;
+      img.style.transformOrigin = originFromEvent(e);
+    });
+
     function close() {
       lightbox.classList.remove("open");
       document.body.style.overflow = "";
+      resetZoom();
       img.src = "";
     }
 
@@ -142,12 +262,12 @@ const cardStart = withPhotos.map((obs) => {
       el.addEventListener("click", (e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        show(parseInt(el.dataset.cardIndex, 10));
+        show(el.dataset.cardTab, parseInt(el.dataset.cardIndex, 10));
       });
     });
 
-    prevBtn.addEventListener("click", () => show(index - 1));
-    nextBtn.addEventListener("click", () => show(index + 1));
+    prevBtn.addEventListener("click", () => show(activeKey, index - 1));
+    nextBtn.addEventListener("click", () => show(activeKey, index + 1));
     closeBtn.addEventListener("click", close);
     lightbox.addEventListener("click", (e) => {
       if (e.target === lightbox) close();
@@ -156,14 +276,68 @@ const cardStart = withPhotos.map((obs) => {
     document.addEventListener("keydown", (e) => {
       if (!lightbox.classList.contains("open")) return;
       if (e.key === "Escape") close();
-      else if (e.key === "ArrowLeft") show(index - 1);
-      else if (e.key === "ArrowRight") show(index + 1);
+      else if (e.key === "ArrowLeft") show(activeKey, index - 1);
+      else if (e.key === "ArrowRight") show(activeKey, index + 1);
+    });
+
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const target = tab.dataset.tab;
+        document.querySelectorAll(".tab").forEach((t) => {
+          const isActive = t === tab;
+          t.classList.toggle("active", isActive);
+          t.setAttribute("aria-selected", isActive ? "true" : "false");
+        });
+        document.querySelectorAll(".grid[data-tab]").forEach((g) => {
+          g.hidden = g.dataset.tab !== target;
+        });
+      });
     });
   })();
 </script>
 
 <style>
-  .count { color: var(--muted); font-size: 0.85rem; margin: 0 0 1.5rem; }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin: 0 0 1.5rem;
+    border-bottom: 1px solid #ddd;
+  }
+  .tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 0.6rem 1rem;
+    font: inherit;
+    color: var(--muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: -1px;
+    transition:
+      color 0.15s,
+      border-color 0.15s;
+  }
+  .tab:hover {
+    color: var(--fg);
+  }
+  .tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab-count {
+    font-size: 0.78rem;
+    background: rgba(0, 0, 0, 0.06);
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    color: var(--muted);
+  }
+  .tab.active .tab-count {
+    background: rgba(79, 127, 48, 0.12);
+    color: var(--accent);
+  }
+
   .grid {
     list-style: none;
     padding: 0;
@@ -172,6 +346,9 @@ const cardStart = withPhotos.map((obs) => {
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 1rem;
   }
+  .grid[hidden] {
+    display: none;
+  }
   .card a {
     display: block;
     color: inherit;
@@ -179,13 +356,15 @@ const cardStart = withPhotos.map((obs) => {
     background: white;
     border-radius: 8px;
     overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    transition: transform 0.15s, box-shadow 0.15s;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    transition:
+      transform 0.15s,
+      box-shadow 0.15s;
     cursor: zoom-in;
   }
   .card a:hover {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
   }
   .thumb {
     position: relative;
@@ -209,15 +388,34 @@ const cardStart = withPhotos.map((obs) => {
     border-radius: 999px;
     letter-spacing: 0.02em;
   }
+  .badge-rg {
+    left: 0.5rem;
+    right: auto;
+    background: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+  }
   .caption {
     padding: 0.65rem 0.8rem 0.8rem;
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
   }
-  .common { font-weight: 600; font-size: 0.95rem; }
-  .sci { font-style: italic; color: var(--muted); font-size: 0.82rem; }
-  time { color: var(--muted); font-size: 0.78rem; margin-top: 0.25rem; }
+  .common {
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+  .sci {
+    font-style: italic;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  time {
+    color: var(--muted);
+    font-size: 0.78rem;
+    margin-top: 0.25rem;
+  }
 
   .lightbox {
     display: none;
@@ -230,7 +428,9 @@ const cardStart = withPhotos.map((obs) => {
     padding: 2rem;
     cursor: zoom-out;
   }
-  .lightbox.open { display: flex; }
+  .lightbox.open {
+    display: flex;
+  }
   .lb-figure {
     margin: 0;
     max-width: min(1024px, 100%);
@@ -240,12 +440,26 @@ const cardStart = withPhotos.map((obs) => {
     align-items: center;
     cursor: default;
   }
+  .lb-img-wrap {
+    overflow: hidden;
+    border-radius: 4px;
+    line-height: 0;
+    display: block;
+  }
   .lb-figure img {
     max-width: 100%;
     max-height: calc(100vh - 8rem);
     object-fit: contain;
     background: #111;
     border-radius: 4px;
+    cursor: zoom-in;
+    transition: transform 0.2s ease;
+    transform-origin: center center;
+    display: block;
+  }
+  .lb-figure img.zoomed {
+    cursor: zoom-out;
+    transform: scale(2);
   }
   .lb-caption {
     color: #eee;
@@ -253,9 +467,20 @@ const cardStart = withPhotos.map((obs) => {
     width: 100%;
     font-size: 0.9rem;
   }
-  .lb-title { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
-  .lb-common { font-weight: 600; font-size: 1.05rem; }
-  .lb-sci { font-style: italic; color: #aaa; }
+  .lb-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .lb-common {
+    font-weight: 600;
+    font-size: 1.05rem;
+  }
+  .lb-sci {
+    font-style: italic;
+    color: #aaa;
+  }
   .lb-counter {
     margin-left: auto;
     color: #aaa;
@@ -264,8 +489,29 @@ const cardStart = withPhotos.map((obs) => {
     padding: 0.1rem 0.5rem;
     border-radius: 999px;
   }
-  .lb-counter[hidden] { display: none; }
-  .lb-meta { color: #aaa; font-size: 0.82rem; margin-top: 0.15rem; }
+  .lb-counter[hidden] {
+    display: none;
+  }
+  .lb-rg {
+    color: white;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: var(--accent);
+    padding: 0.1rem 0.55rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    letter-spacing: 0.02em;
+  }
+  .lb-rg[hidden] {
+    display: none;
+  }
+  .lb-meta {
+    color: #aaa;
+    font-size: 0.82rem;
+    margin-top: 0.15rem;
+  }
   .lb-footer {
     margin-top: 0.4rem;
     display: flex;
@@ -274,11 +520,21 @@ const cardStart = withPhotos.map((obs) => {
     gap: 1rem;
     flex-wrap: wrap;
   }
-  .lb-attr { color: #888; font-size: 0.75rem; }
-  .lb-footer a { color: #7cc09c; text-decoration: none; font-size: 0.85rem; }
-  .lb-footer a:hover { text-decoration: underline; }
+  .lb-attr {
+    color: #888;
+    font-size: 0.75rem;
+  }
+  .lb-footer a {
+    color: #7cc09c;
+    text-decoration: none;
+    font-size: 0.85rem;
+  }
+  .lb-footer a:hover {
+    text-decoration: underline;
+  }
 
-  .lb-close, .lb-nav {
+  .lb-close,
+  .lb-nav {
     position: absolute;
     background: rgba(255, 255, 255, 0.1);
     color: white;
@@ -293,8 +549,22 @@ const cardStart = withPhotos.map((obs) => {
     justify-content: center;
     transition: background 0.15s;
   }
-  .lb-close:hover, .lb-nav:hover { background: rgba(255, 255, 255, 0.25); }
-  .lb-close { top: 1rem; right: 1rem; }
-  .lb-prev { left: 1rem; top: 50%; transform: translateY(-50%); }
-  .lb-next { right: 1rem; top: 50%; transform: translateY(-50%); }
+  .lb-close:hover,
+  .lb-nav:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+  .lb-close {
+    top: 1rem;
+    right: 1rem;
+  }
+  .lb-prev {
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  .lb-next {
+    right: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+  }
 </style>
