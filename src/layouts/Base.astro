@@ -106,6 +106,14 @@ const { title } = Astro.props;
       header a:hover {
         text-decoration: underline;
       }
+
+      @media screen and (max-width: 636px) {
+        header {
+          display: block;
+          text-align: left;
+          background: none;
+        }
+      }
       .inat-link {
         position: relative;
         display: inline-flex;
