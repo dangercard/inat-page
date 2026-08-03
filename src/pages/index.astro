@@ -90,7 +90,7 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
 }));
 ---
 
-<Base title="A. Deloach — Observations">
+<Base title="El Yunque Wildlife">
   <div class="view-switch" role="tablist" aria-label="Choose view">
     <button
       class="view-btn active"
@@ -137,66 +137,68 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
 
   <section id="view-catalog" class="view" data-view="catalog" hidden>
     <div class="tabs" role="tablist">
+      {
+        tabs.map((t, idx) => (
+          <button
+            class={`tab ${idx === 0 ? "active" : ""}`}
+            data-tab={t.key}
+            role="tab"
+            aria-selected={idx === 0 ? "true" : "false"}
+          >
+            {t.label} <span class="tab-count">{t.obs.length}</span>
+          </button>
+        ))
+      }
+    </div>
+
     {
       tabs.map((t, idx) => (
-        <button
-          class={`tab ${idx === 0 ? "active" : ""}`}
-          data-tab={t.key}
-          role="tab"
-          aria-selected={idx === 0 ? "true" : "false"}
-        >
-          {t.label} <span class="tab-count">{t.obs.length}</span>
-        </button>
+        <ul class="grid" data-tab={t.key} hidden={idx !== 0}>
+          {t.obs.map((obs, i) => {
+            const photo = obs.photos[0];
+            const common =
+              obs.taxon?.preferred_common_name ??
+              obs.species_guess ??
+              "Unknown";
+            const scientific = obs.taxon?.name;
+            return (
+              <li class="card">
+                <a
+                  href={obs.uri}
+                  target="_blank"
+                  rel="noopener"
+                  data-card-index={cardStarts[t.key][i]}
+                  data-card-tab={t.key}
+                >
+                  <div class="thumb">
+                    <img
+                      src={photoUrl(photo, "medium")}
+                      alt={common}
+                      loading="lazy"
+                      width={photo.original_dimensions?.width ?? 500}
+                      height={photo.original_dimensions?.height ?? 500}
+                    />
+                    {obs.quality_grade === "research" && (
+                      <span class="badge badge-rg" title="Research grade">
+                        <span aria-hidden="true">✓</span> RG
+                      </span>
+                    )}
+                    {obs.photos.length > 1 && (
+                      <span class="badge">+{obs.photos.length - 1}</span>
+                    )}
+                  </div>
+                  <div class="caption">
+                    <span class="common">{common}</span>
+                    {scientific && <span class="sci">{scientific}</span>}
+                    {obs.observed_on && <time>{obs.observed_on}</time>}
+                  </div>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
       ))
     }
-  </div>
-
-  {
-    tabs.map((t, idx) => (
-      <ul class="grid" data-tab={t.key} hidden={idx !== 0}>
-        {t.obs.map((obs, i) => {
-          const photo = obs.photos[0];
-          const common =
-            obs.taxon?.preferred_common_name ?? obs.species_guess ?? "Unknown";
-          const scientific = obs.taxon?.name;
-          return (
-            <li class="card">
-              <a
-                href={obs.uri}
-                target="_blank"
-                rel="noopener"
-                data-card-index={cardStarts[t.key][i]}
-                data-card-tab={t.key}
-              >
-                <div class="thumb">
-                  <img
-                    src={photoUrl(photo, "medium")}
-                    alt={common}
-                    loading="lazy"
-                    width={photo.original_dimensions?.width ?? 500}
-                    height={photo.original_dimensions?.height ?? 500}
-                  />
-                  {obs.quality_grade === "research" && (
-                    <span class="badge badge-rg" title="Research grade">
-                      <span aria-hidden="true">✓</span> RG
-                    </span>
-                  )}
-                  {obs.photos.length > 1 && (
-                    <span class="badge">+{obs.photos.length - 1}</span>
-                  )}
-                </div>
-                <div class="caption">
-                  <span class="common">{common}</span>
-                  {scientific && <span class="sci">{scientific}</span>}
-                  {obs.observed_on && <time>{obs.observed_on}</time>}
-                </div>
-              </a>
-            </li>
-          );
-        })}
-      </ul>
-    ))
-  }
   </section>
 
   <div
