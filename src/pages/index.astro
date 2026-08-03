@@ -1,5 +1,7 @@
 ---
 import Base from "../layouts/Base.astro";
+import { Image } from "astro:assets";
+import inatLogo from "../assets/inaturalist-logo.png";
 import { fetchAllObservations, photoUrl } from "../lib/inaturalist";
 import type { Observation } from "../lib/inaturalist";
 
@@ -23,6 +25,7 @@ function buildPhotoList(list: Observation[]) {
   return list.flatMap((obs) =>
     obs.photos.map((photo, i) => ({
       src: photoUrl(photo, "large"),
+      thumb: photoUrl(photo, "medium"),
       common:
         obs.taxon?.preferred_common_name ?? obs.species_guess ?? "Unknown",
       scientific: obs.taxon?.name ?? null,
@@ -46,16 +49,94 @@ function buildCardStart(list: Observation[]) {
   });
 }
 
-const photoLists = Object.fromEntries(
+const perTab = Object.fromEntries(
   tabs.map((t) => [t.key, buildPhotoList(t.obs)]),
 );
+const galleryPool = tabs.flatMap((t) => perTab[t.key]);
+const photoLists = { ...perTab, gallery: galleryPool };
 const cardStarts = Object.fromEntries(
   tabs.map((t) => [t.key, buildCardStart(t.obs)]),
 );
+
+// Initial mosaic tiles: a shuffled spread across the whole collection,
+// each assigned a size so the grid reads as a varied mosaic.
+const TILE_COUNT = Math.min(galleryPool.length, 30);
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const tileIndices = shuffle(galleryPool.map((_, i) => i)).slice(0, TILE_COUNT);
+
+// Size bag: mostly small squares with a few larger feature tiles.
+const bigN = Math.round(TILE_COUNT * 0.12);
+const wideN = Math.round(TILE_COUNT * 0.16);
+const tallN = Math.round(TILE_COUNT * 0.16);
+const sizes = shuffle([
+  ...Array(bigN).fill("big"),
+  ...Array(wideN).fill("wide"),
+  ...Array(tallN).fill("tall"),
+  ...Array(Math.max(0, TILE_COUNT - bigN - wideN - tallN)).fill("small"),
+]);
+
+const mosaicTiles = tileIndices.map((idx, i) => ({
+  idx,
+  size: sizes[i] ?? "small",
+}));
 ---
 
 <Base title="A. Deloach — Observations">
-  <div class="tabs" role="tablist">
+  <div class="view-switch" role="tablist" aria-label="Choose view">
+    <button
+      class="view-btn active"
+      data-view="gallery"
+      role="tab"
+      aria-selected="true"
+    >
+      Gallery
+    </button>
+    <button
+      class="view-btn"
+      data-view="catalog"
+      role="tab"
+      aria-selected="false"
+    >
+      Catalog
+    </button>
+  </div>
+
+  <section id="view-gallery" class="view" data-view="gallery">
+    <div class="mosaic">
+      {
+        mosaicTiles.map((tile) => {
+          const p = galleryPool[tile.idx];
+          return (
+            <button
+              class:list={["tile", tile.size]}
+              data-pool-index={tile.idx}
+              aria-label={p.common}
+            >
+              <img
+                class="tile-img active"
+                src={p.thumb}
+                alt={p.common}
+                loading="lazy"
+              />
+              <img class="tile-img" alt="" aria-hidden="true" />
+            </button>
+          );
+        })
+      }
+    </div>
+  </section>
+
+  <section id="view-catalog" class="view" data-view="catalog" hidden>
+    <div class="tabs" role="tablist">
     {
       tabs.map((t, idx) => (
         <button
@@ -116,6 +197,7 @@ const cardStarts = Object.fromEntries(
       </ul>
     ))
   }
+  </section>
 
   <div
     id="lightbox"
@@ -144,14 +226,27 @@ const cardStarts = Object.fromEntries(
           <span id="lightbox-rg" class="lb-rg" hidden>
             <span aria-hidden="true">✓</span> Research Grade
           </span>
-          <span id="lightbox-counter" class="lb-counter" hidden></span>
+          <span class="lb-title-right">
+            <span id="lightbox-counter" class="lb-counter" hidden></span>
+            <a
+              id="lightbox-link"
+              class="lb-inat-link"
+              href="#"
+              target="_blank"
+              rel="noopener"
+            >
+              <Image
+                src={inatLogo}
+                alt="View on iNaturalist"
+                width={56}
+                class="lb-inat-logo"
+              />
+            </a>
+          </span>
         </div>
         <div id="lightbox-meta" class="lb-meta"></div>
         <div class="lb-footer">
           <span id="lightbox-attr" class="lb-attr"></span>
-          <a id="lightbox-link" href="#" target="_blank" rel="noopener"
-            >View on iNaturalist &rarr;</a
-          >
         </div>
       </figcaption>
     </figure>
@@ -293,15 +388,201 @@ const cardStarts = Object.fromEntries(
         });
       });
     });
+
+    // ----- Gallery: cycling image mosaic -----
+    const pool = photoLists.gallery || [];
+    const tileEls = [...document.querySelectorAll(".tile")];
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const displayed = new Set(
+      tileEls.map((t) => parseInt(t.dataset.poolIndex, 10)),
+    );
+
+    tileEls.forEach((tile) => {
+      tile.addEventListener("click", () => {
+        show("gallery", parseInt(tile.dataset.poolIndex, 10));
+      });
+    });
+
+    function cycleOne() {
+      if (pool.length <= tileEls.length) return; // nothing new to rotate in
+      const tile = tileEls[Math.floor(Math.random() * tileEls.length)];
+      let newIdx;
+      let tries = 0;
+      do {
+        newIdx = Math.floor(Math.random() * pool.length);
+      } while (displayed.has(newIdx) && ++tries < 40);
+      if (displayed.has(newIdx)) return;
+
+      const oldIdx = parseInt(tile.dataset.poolIndex, 10);
+      const layers = tile.querySelectorAll(".tile-img");
+      const activeLayer = tile.querySelector(".tile-img.active") || layers[0];
+      const hiddenLayer = activeLayer === layers[0] ? layers[1] : layers[0];
+      const p = pool[newIdx];
+
+      const pre = new Image();
+      pre.onload = () => {
+        hiddenLayer.src = p.thumb;
+        hiddenLayer.alt = p.common;
+        hiddenLayer.classList.add("active");
+        activeLayer.classList.remove("active");
+        activeLayer.alt = "";
+        displayed.delete(oldIdx);
+        displayed.add(newIdx);
+        tile.dataset.poolIndex = String(newIdx);
+        tile.setAttribute("aria-label", p.common);
+      };
+      pre.src = p.thumb;
+    }
+
+    let cycleTimer = null;
+    function startCycling() {
+      if (reduceMotion || cycleTimer || pool.length <= tileEls.length) return;
+      cycleTimer = setInterval(() => {
+        if (!document.hidden) cycleOne();
+      }, 2000);
+    }
+    function stopCycling() {
+      if (cycleTimer) {
+        clearInterval(cycleTimer);
+        cycleTimer = null;
+      }
+    }
+
+    // ----- View switch (Gallery / Catalog) -----
+    const viewBtns = [...document.querySelectorAll(".view-btn")];
+    const views = [...document.querySelectorAll(".view")];
+    function setView(name) {
+      viewBtns.forEach((b) => {
+        const on = b.dataset.view === name;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      views.forEach((v) => {
+        v.hidden = v.dataset.view !== name;
+      });
+      if (name === "gallery") startCycling();
+      else stopCycling();
+    }
+    viewBtns.forEach((b) => {
+      b.addEventListener("click", () => setView(b.dataset.view));
+    });
+
+    startCycling();
   })();
 </script>
 
 <style>
+  .view-switch {
+    display: inline-flex;
+    gap: 0.25rem;
+    padding: 0.25rem;
+    margin: 0 0 1.5rem;
+    background: var(--chip);
+    border-radius: 999px;
+  }
+  .view-btn {
+    background: transparent;
+    border: none;
+    font: inherit;
+    color: var(--muted);
+    padding: 0.4rem 1.15rem;
+    border-radius: 999px;
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      color 0.15s;
+  }
+  .view-btn:hover {
+    color: var(--fg);
+  }
+  .view-btn.active {
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+  .view[hidden] {
+    display: none;
+  }
+
+  .mosaic {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-auto-rows: 150px;
+    grid-auto-flow: dense;
+    gap: 0.5rem;
+  }
+  .tile {
+    position: relative;
+    display: block;
+    padding: 0;
+    margin: 0;
+    border: none;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--thumb);
+    cursor: zoom-in;
+  }
+  .tile.wide {
+    grid-column: span 2;
+  }
+  .tile.tall {
+    grid-row: span 2;
+  }
+  .tile.big {
+    grid-column: span 2;
+    grid-row: span 2;
+  }
+  @media (max-width: 420px) {
+    /* Avoid horizontal overflow when only one column fits. */
+    .tile.wide {
+      grid-column: auto;
+    }
+    .tile.big {
+      grid-column: auto;
+      grid-row: span 2;
+    }
+  }
+  .tile-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0;
+    transition:
+      opacity 0.9s ease,
+      transform 0.4s ease;
+  }
+  .tile-img.active {
+    opacity: 1;
+  }
+  .tile::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px var(--border);
+    pointer-events: none;
+    transition: box-shadow 0.15s ease;
+  }
+  .tile:hover .tile-img.active {
+    transform: scale(1.05);
+  }
+  .tile:hover::after {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .tile:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   .tabs {
     display: flex;
     gap: 0.25rem;
     margin: 0 0 1.5rem;
-    border-bottom: 1px solid #ddd;
+    border-bottom: 1px solid var(--border);
   }
   .tab {
     background: transparent;
@@ -328,13 +609,13 @@ const cardStarts = Object.fromEntries(
   }
   .tab-count {
     font-size: 0.78rem;
-    background: rgba(0, 0, 0, 0.06);
+    background: var(--chip);
     padding: 0.05rem 0.45rem;
     border-radius: 999px;
     color: var(--muted);
   }
   .tab.active .tab-count {
-    background: rgba(79, 127, 48, 0.12);
+    background: rgba(190, 220, 127, 0.18);
     color: var(--accent);
   }
 
@@ -353,10 +634,11 @@ const cardStarts = Object.fromEntries(
     display: block;
     color: inherit;
     text-decoration: none;
-    background: white;
+    background: var(--card);
+    border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
     transition:
       transform 0.15s,
       box-shadow 0.15s;
@@ -364,7 +646,7 @@ const cardStarts = Object.fromEntries(
   }
   .card a:hover {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
   }
   .thumb {
     position: relative;
@@ -374,14 +656,14 @@ const cardStarts = Object.fromEntries(
     height: 220px;
     object-fit: cover;
     display: block;
-    background: #eee;
+    background: var(--thumb);
   }
   .badge {
     position: absolute;
     top: 0.5rem;
     right: 0.5rem;
-    background: rgba(0, 0, 0, 0.65);
-    color: white;
+    background: rgba(4, 12, 6, 0.72);
+    color: var(--fg);
     font-size: 0.72rem;
     font-weight: 600;
     padding: 0.15rem 0.45rem;
@@ -392,6 +674,7 @@ const cardStarts = Object.fromEntries(
     left: 0.5rem;
     right: auto;
     background: var(--accent);
+    color: var(--on-accent);
     display: inline-flex;
     align-items: center;
     gap: 0.2rem;
@@ -421,7 +704,7 @@ const cardStarts = Object.fromEntries(
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.88);
+    background: rgba(4, 12, 6, 0.92);
     align-items: center;
     justify-content: center;
     z-index: 1000;
@@ -450,7 +733,7 @@ const cardStarts = Object.fromEntries(
     max-width: 100%;
     max-height: calc(100vh - 8rem);
     object-fit: contain;
-    background: #111;
+    background: var(--bg);
     border-radius: 4px;
     cursor: zoom-in;
     transition: transform 0.2s ease;
@@ -462,7 +745,7 @@ const cardStarts = Object.fromEntries(
     transform: scale(2);
   }
   .lb-caption {
-    color: #eee;
+    color: var(--fg);
     padding: 0.75rem 0.25rem 0;
     width: 100%;
     font-size: 0.9rem;
@@ -473,19 +756,25 @@ const cardStarts = Object.fromEntries(
     gap: 0.5rem;
     flex-wrap: wrap;
   }
+  .lb-title-right {
+    margin-left: auto;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
   .lb-common {
     font-weight: 600;
     font-size: 1.05rem;
   }
   .lb-sci {
     font-style: italic;
-    color: #aaa;
+    color: var(--muted);
   }
   .lb-counter {
-    margin-left: auto;
-    color: #aaa;
+    color: var(--muted);
     font-size: 0.82rem;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--chip);
     padding: 0.1rem 0.5rem;
     border-radius: 999px;
   }
@@ -493,7 +782,7 @@ const cardStarts = Object.fromEntries(
     display: none;
   }
   .lb-rg {
-    color: white;
+    color: var(--on-accent);
     font-size: 0.78rem;
     font-weight: 600;
     background: var(--accent);
@@ -508,7 +797,7 @@ const cardStarts = Object.fromEntries(
     display: none;
   }
   .lb-meta {
-    color: #aaa;
+    color: var(--muted);
     font-size: 0.82rem;
     margin-top: 0.15rem;
   }
@@ -521,23 +810,32 @@ const cardStarts = Object.fromEntries(
     flex-wrap: wrap;
   }
   .lb-attr {
-    color: #888;
+    color: var(--muted);
     font-size: 0.75rem;
   }
-  .lb-footer a {
-    color: #7cc09c;
-    text-decoration: none;
-    font-size: 0.85rem;
+  .lb-inat-link {
+    display: inline-flex;
+    align-items: center;
   }
-  .lb-footer a:hover {
-    text-decoration: underline;
+  .lb-inat-logo {
+    height: 1.4rem;
+    width: auto;
+    display: block;
+    opacity: 0.9;
+    transition:
+      opacity 0.15s ease,
+      transform 0.15s ease;
+  }
+  .lb-inat-link:hover .lb-inat-logo {
+    opacity: 1;
+    transform: scale(1.06);
   }
 
   .lb-close,
   .lb-nav {
     position: absolute;
-    background: rgba(255, 255, 255, 0.1);
-    color: white;
+    background: rgba(238, 255, 204, 0.12);
+    color: var(--fg);
     border: none;
     width: 44px;
     height: 44px;
@@ -551,7 +849,7 @@ const cardStarts = Object.fromEntries(
   }
   .lb-close:hover,
   .lb-nav:hover {
-    background: rgba(255, 255, 255, 0.25);
+    background: rgba(238, 255, 204, 0.22);
   }
   .lb-close {
     top: 1rem;

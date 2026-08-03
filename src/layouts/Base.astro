@@ -1,4 +1,7 @@
 ---
+import { Image } from "astro:assets";
+import inatLogo from "../assets/inaturalist-logo.png";
+
 interface Props {
   title: string;
 }
@@ -15,24 +18,26 @@ const { title } = Astro.props;
   </head>
   <body>
     <header>
-      <h1>A. Deloach &mdash; iNaturalist observations</h1>
+      <h1>El Yunque Wildlife</h1>
       <p>
         <a
-          href="https://www.inaturalist.org/observations/alejandrodeloach"
+          class="inat-link"
+          data-tooltip="View on iNaturalist"
+          href="https://www.inaturalist.org/observations?place_id=any&user_id=alejandrodeloach&verifiable=any"
           target="_blank"
           rel="noopener"
         >
-          View my observations on iNaturalist &rarr;
+          <Image
+            src={inatLogo}
+            alt="View on iNaturalist"
+            width={72}
+            class="inat-logo"
+          />
         </a>
       </p>
       <p>
-        <a
-          href="https://www.inaturalist.org/observations"
-          target="_blank"
-          rel="noopener"
-        >
-          Explore other observations on iNaturalist &rarr;
-        </a>
+        Hobbyist wildlife photographer sharing the species diversity of my
+        hometown.
       </p>
     </header>
     <main>
@@ -40,17 +45,18 @@ const { title } = Astro.props;
     </main>
     <style is:global>
       :root {
-        --bg: #faf9f6;
-        --fg: #1a1a1a;
-        --muted: #666;
-        --accent: #4f7f30;
-        --leaf-light: #95c75a;
-        --leaf: #5a8b3a;
-      }
-      @property --light-y {
-        syntax: "<percentage>";
-        inherits: false;
-        initial-value: 0%;
+        color-scheme: dark;
+        /* Forest palette: 040c06 112318 1e3a29 305d42 4d8061 89a257 bedc7f eeffcc */
+        --bg: #040c06;
+        --fg: #eeffcc;
+        --muted: #89a257;
+        --accent: #bedc7f;
+        --card: #112318;
+        --thumb: #1e3a29;
+        --border: rgba(190, 220, 127, 0.14);
+        --chip: rgba(137, 162, 87, 0.15);
+        /* Dark ink used for text sitting on top of --accent fills. */
+        --on-accent: #040c06;
       }
       * {
         box-sizing: border-box;
@@ -73,64 +79,19 @@ const { title } = Astro.props;
         background: var(--bg);
         color: var(--fg);
         line-height: 1.5;
-        position: relative;
         min-height: 100vh;
-      }
-      body::before,
-      body::after {
-        content: "";
-        position: fixed;
-        top: 0;
-        bottom: 0;
-        width: clamp(28px, 5vw, 72px);
-        pointer-events: none;
-        z-index: 0;
-        background: linear-gradient(
-          180deg,
-          var(--leaf),
-          var(--leaf-light) var(--light-y),
-          var(--leaf)
-        );
-        animation: light-travel linear;
-        animation-timeline: scroll(root block);
-      }
-      @keyframes light-travel {
-        from {
-          --light-y: 0%;
-        }
-        to {
-          --light-y: 100%;
-        }
-      }
-      body::before {
-        left: 0;
-        -webkit-mask-image: linear-gradient(to right, black 70%, transparent);
-        mask-image: linear-gradient(to right, black 70%, transparent);
-      }
-      body::after {
-        right: 0;
-        -webkit-mask-image: linear-gradient(to left, black 70%, transparent);
-        mask-image: linear-gradient(to left, black 70%, transparent);
-      }
-      header,
-      main {
-        position: relative;
-        z-index: 1;
-      }
-      @media (max-width: 700px) {
-        body::before,
-        body::after {
-          display: none;
-        }
       }
       header {
         padding: 2rem 1.5rem 1rem;
         max-width: 1200px;
         margin: 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
       }
       header h1 {
-        margin: 0 0 0.25rem;
-        font-size: 1.5rem;
+        margin: 0;
+        font-size: 2rem;
         font-weight: 600;
       }
       header p {
@@ -144,6 +105,49 @@ const { title } = Astro.props;
       }
       header a:hover {
         text-decoration: underline;
+      }
+      .inat-link {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      .inat-link::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        top: calc(100% + 0.5rem);
+        left: 50%;
+        transform: translateX(-50%) translateY(-0.25rem);
+        background: var(--card);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        padding: 0.3rem 0.6rem;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        line-height: 1;
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          opacity 0.15s ease,
+          transform 0.15s ease;
+        z-index: 10;
+      }
+      .inat-link:hover::after,
+      .inat-link:focus-visible::after {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+      .inat-link:hover {
+        text-decoration: none;
+      }
+      .inat-logo {
+        height: 1.9rem;
+        width: auto;
+        display: block;
+        transition: transform 0.15s ease;
+      }
+      .inat-link:hover .inat-logo {
+        transform: scale(1.06);
       }
       main {
         max-width: 1200px;
