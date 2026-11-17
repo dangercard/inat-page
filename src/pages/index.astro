@@ -2,11 +2,64 @@
 import Base from "../layouts/Base.astro";
 import { Image } from "astro:assets";
 import inatLogo from "../assets/inaturalist-logo.png";
-import { fetchAllObservations, photoUrl } from "../lib/inaturalist";
-import type { Observation } from "../lib/inaturalist";
+import Flask from "../components/Flask.astro";
+import {
+  establishment,
+  fetchAllObservations,
+  fetchAnnotationLabeler,
+  photoUrl,
+} from "../lib/inaturalist";
+import type { Establishment, Observation } from "../lib/inaturalist";
 
-const observations = await fetchAllObservations("alejandrodeloach");
+const [observations, labelAnnotation] = await Promise.all([
+  fetchAllObservations("alejandrodeloach"),
+  fetchAnnotationLabeler(),
+]);
 const withPhotos = observations.filter((o) => o.photos.length > 0);
+
+// Friendly names for iNaturalist's iconic taxa; anything unlisted is "Other".
+const GROUP_LABELS: Record<string, string> = {
+  Insecta: "Insects",
+  Arachnida: "Arachnids",
+  Mollusca: "Mollusks",
+  Reptilia: "Reptiles",
+  Amphibia: "Amphibians",
+  Aves: "Birds",
+  Mammalia: "Mammals",
+  Actinopterygii: "Fish",
+  Plantae: "Plants",
+  Fungi: "Fungi",
+};
+const groupOf = (o: Observation) =>
+  GROUP_LABELS[o.taxon?.iconic_taxon_name ?? ""] ?? "Other";
+
+const STATUS_LABELS: Record<Establishment, string> = {
+  endemic: "Endemic",
+  native: "Native",
+  introduced: "Introduced",
+};
+
+// Annotations worth showing. "Alive" and "Organism" are the default for
+// nearly everything, so they'd only add noise.
+function annotationsOf(o: Observation) {
+  return (o.annotations ?? [])
+    .map(labelAnnotation)
+    .filter((a) => a !== null)
+    .filter(
+      (a) =>
+        !(a.attribute === "Alive or Dead" && a.value === "Alive") &&
+        !(a.attribute === "Evidence of Presence" && a.value === "Organism"),
+    )
+    .map((a) => a.value);
+}
+
+// "07:44" from the observer's local timestamp, shown as "7:44 AM".
+function timeOf(o: Observation) {
+  const m = o.time_observed_at?.match(/T(\d\d):(\d\d)/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
+}
 
 const tabs = [
   {
@@ -22,22 +75,30 @@ const tabs = [
 ] as const;
 
 function buildPhotoList(list: Observation[]) {
-  return list.flatMap((obs) =>
-    obs.photos.map((photo, i) => ({
-      src: photoUrl(photo, "large"),
-      thumb: photoUrl(photo, "medium"),
+  return list.flatMap((obs) => {
+    const status = establishment(obs.taxon);
+    const shared = {
       common:
         obs.taxon?.preferred_common_name ?? obs.species_guess ?? "Unknown",
       scientific: obs.taxon?.name ?? null,
       date: obs.observed_on,
+      time: timeOf(obs),
       place: obs.place_guess,
       uri: obs.uri,
+      researchGrade: obs.quality_grade === "research",
+      status: status && STATUS_LABELS[status],
+      annotations: annotationsOf(obs),
+      wiki: obs.taxon?.wikipedia_url ?? null,
+    };
+    return obs.photos.map((photo, i) => ({
+      ...shared,
+      src: photoUrl(photo, "large"),
+      thumb: photoUrl(photo, "medium"),
       attribution: photo.attribution,
       photoIndex: i + 1,
       photoCount: obs.photos.length,
-      researchGrade: obs.quality_grade === "research",
-    })),
-  );
+    }));
+  });
 }
 
 function buildCardStart(list: Observation[]) {
@@ -57,6 +118,63 @@ const photoLists = { ...perTab, gallery: galleryPool };
 const cardStarts = Object.fromEntries(
   tabs.map((t) => [t.key, buildCardStart(t.obs)]),
 );
+
+// Catalog filter groups, most-observed first.
+const groupCounts = new Map<string, number>();
+for (const o of withPhotos) {
+  groupCounts.set(groupOf(o), (groupCounts.get(groupOf(o)) ?? 0) + 1);
+}
+const groups = [...groupCounts.keys()].sort(
+  (a, b) =>
+    (a === "Other" ? 1 : 0) - (b === "Other" ? 1 : 0) ||
+    groupCounts.get(b)! - groupCounts.get(a)!,
+);
+
+const SORTS = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "name", label: "Name A–Z" },
+  {
+    value: "rarest",
+    label: "Rarest on iNaturalist",
+    hint: "Fewest observations site-wide",
+  },
+];
+
+// ----- Stats strip -----
+// Species-level taxa (subspecies roll up to their species).
+const speciesIds = new Set<number>();
+const endemicSpeciesIds = new Set<number>();
+for (const o of observations) {
+  const t = o.taxon;
+  if (!t || (t.rank_level ?? 99) > 10) continue;
+  const id = t.min_species_taxon_id ?? t.id;
+  speciesIds.add(id);
+  if (t.endemic) endemicSpeciesIds.add(id);
+}
+const firstYear = observations
+  .map((o) => o.observed_on?.slice(0, 4))
+  .filter(Boolean)
+  .sort()[0];
+
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const monthCounts = MONTHS.map(() => 0);
+for (const o of observations) {
+  const m = Number(o.observed_on?.slice(5, 7));
+  if (m) monthCounts[m - 1]++;
+}
+const monthMax = Math.max(1, ...monthCounts);
+const peakMonth = monthCounts.indexOf(monthMax);
+
+const stats = [
+  { label: "Observations", value: observations.length.toLocaleString("en-US") },
+  { label: "Species", value: speciesIds.size.toLocaleString("en-US") },
+  { label: "Endemic species", value: endemicSpeciesIds.size.toLocaleString("en-US") },
+  { label: "Observing since", value: firstYear ?? "—" },
+];
 
 // Initial mosaic tiles: a shuffled spread across the whole collection,
 // each assigned a size so the grid reads as a varied mosaic.
@@ -91,6 +209,50 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
 ---
 
 <Base title="El Yunque Wildlife">
+  <section class="stats" aria-label="Collection at a glance">
+    {
+      stats.map((s) => (
+        <div class="stat">
+          <span class="stat-value">{s.value}</span>
+          <span class="stat-label">{s.label}</span>
+        </div>
+      ))
+    }
+    <figure class="stat stat-months">
+      <figcaption class="stat-label">Observations by month</figcaption>
+      <div class="months" aria-hidden="true">
+        {
+          monthCounts.map((n, i) => (
+            <div
+              class:list={["month", { peak: i === peakMonth }]}
+              data-tip={`${MONTHS[i]}: ${n} observation${n === 1 ? "" : "s"}`}
+            >
+              {i === peakMonth && <span class="month-value">{n}</span>}
+              <span
+                class="month-bar"
+                style={`height: ${(n / monthMax) * 100}%`}
+              />
+              <span class="month-label">{MONTHS[i][0]}</span>
+            </div>
+          ))
+        }
+      </div>
+      <table class="sr-only">
+        <caption>Observations by month</caption>
+        <tbody>
+          {
+            monthCounts.map((n, i) => (
+              <tr>
+                <th scope="row">{MONTHS[i]}</th>
+                <td>{n}</td>
+              </tr>
+            ))
+          }
+        </tbody>
+      </table>
+    </figure>
+  </section>
+
   <div class="view-switch" role="tablist" aria-label="Choose view">
     <button
       class="view-btn active"
@@ -151,6 +313,109 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       }
     </div>
 
+    <div class="filters">
+      <div class="filter-row">
+        <input
+          type="search"
+          class="filter-search"
+          placeholder="Search by name"
+          aria-label="Search by common or scientific name"
+        />
+        <div class="segmented" role="group" aria-label="Status in Puerto Rico">
+          {
+            ["all", "endemic", "native", "introduced"].map((s) => (
+              <button
+                class:list={["seg-btn", { active: s === "all" }]}
+                data-status={s}
+                aria-pressed={s === "all" ? "true" : "false"}
+              >
+                {s === "all" ? "Any status" : STATUS_LABELS[s as Establishment]}
+              </button>
+            ))
+          }
+        </div>
+        <div class="filter-sort">
+          {/* Touch screens tap this invisible native select (laid over the
+              pill) to get the phone's own picker. */}
+          <select class="filter-sort-native" aria-label="Sort by">
+            {SORTS.map((s) => <option value={s.value}>{s.label}</option>)}
+          </select>
+          <button
+            class="filter-sort-btn"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            aria-labelledby="sort-label sort-value"
+          >
+            <span id="sort-label" class="filter-sort-label">Sort by</span>
+            <span id="sort-value" class="filter-sort-value"
+              >{SORTS[0].label}</span
+            >
+            <svg
+              class="filter-sort-chevron"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+          <ul
+            class="sort-menu"
+            role="listbox"
+            aria-labelledby="sort-label"
+            tabindex="-1"
+            hidden
+          >
+            {
+              SORTS.map((s, i) => (
+                <li
+                  id={`sort-${s.value}`}
+                  class="sort-option"
+                  role="option"
+                  data-value={s.value}
+                  aria-selected={i === 0 ? "true" : "false"}
+                >
+                  <svg
+                    class="sort-check"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M5 12.5l4.5 4.5L19 7.5" />
+                  </svg>
+                  <span class="sort-text">
+                    <span class="sort-name">{s.label}</span>
+                    {s.hint && <span class="sort-hint">{s.hint}</span>}
+                  </span>
+                </li>
+              ))
+            }
+          </ul>
+        </div>
+      </div>
+      <div class="chips" role="group" aria-label="Group">
+        <button class="chip active" data-group="all" aria-pressed="true">
+          All <span class="chip-count"></span>
+        </button>
+        {
+          groups.map((g) => (
+            <button class="chip" data-group={g} aria-pressed="false">
+              {g} <span class="chip-count" />
+            </button>
+          ))
+        }
+      </div>
+      <p class="filter-summary" aria-live="polite"></p>
+    </div>
+
     {
       tabs.map((t, idx) => (
         <ul class="grid" data-tab={t.key} hidden={idx !== 0}>
@@ -162,13 +427,21 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
               "Unknown";
             const scientific = obs.taxon?.name;
             return (
-              <li class="card">
+              <li
+                class="card"
+                data-order={i}
+                data-group={groupOf(obs)}
+                data-status={establishment(obs.taxon) ?? ""}
+                data-name={`${common} ${scientific ?? ""}`.toLowerCase()}
+                data-sort-name={common.toLowerCase()}
+                data-rarity={obs.taxon?.observations_count ?? ""}
+                data-start={cardStarts[t.key][i]}
+                data-count={obs.photos.length}
+              >
                 <a
                   href={obs.uri}
                   target="_blank"
                   rel="noopener"
-                  data-card-index={cardStarts[t.key][i]}
-                  data-card-tab={t.key}
                 >
                   <div class="thumb">
                     <img
@@ -180,7 +453,8 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
                     />
                     {obs.quality_grade === "research" && (
                       <span class="badge badge-rg" title="Research grade">
-                        <span aria-hidden="true">✓</span> RG
+                        <Flask class="rg-icon" />
+                        <span class="sr-only">Research grade</span>
                       </span>
                     )}
                     {obs.photos.length > 1 && (
@@ -199,6 +473,10 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
         </ul>
       ))
     }
+    <div class="filter-empty" hidden>
+      <p>No observations match these filters.</p>
+      <button class="chip" data-clear-filters>Clear filters</button>
+    </div>
   </section>
 
   <div
@@ -248,8 +526,9 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
           <span id="lightbox-common" class="lb-common"></span>
           <span id="lightbox-sci" class="lb-sci"></span>
           <span id="lightbox-rg" class="lb-rg" hidden>
-            <span aria-hidden="true">✓</span> Research Grade
+            <Flask class="rg-icon" /> Research Grade
           </span>
+          <span id="lightbox-status" class="lb-status" hidden></span>
           <span class="lb-title-right">
             <span id="lightbox-counter" class="lb-counter" hidden></span>
             <a
@@ -269,8 +548,17 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
           </span>
         </div>
         <div id="lightbox-meta" class="lb-meta"></div>
+        <div id="lightbox-tags" class="lb-tags" hidden></div>
         <div class="lb-footer">
           <span id="lightbox-attr" class="lb-attr"></span>
+          <a
+            id="lightbox-wiki"
+            class="lb-wiki"
+            href="#"
+            target="_blank"
+            rel="noopener"
+            hidden>Read about this species on Wikipedia</a
+          >
         </div>
       </figcaption>
     </figure>
@@ -292,10 +580,13 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     const closeBtn = document.getElementById("lightbox-close");
     const prevBtn = document.getElementById("lightbox-prev");
     const nextBtn = document.getElementById("lightbox-next");
+    const statusEl = document.getElementById("lightbox-status");
+    const tags = document.getElementById("lightbox-tags");
+    const wiki = document.getElementById("lightbox-wiki");
 
     let active = null; // current photo list
     let index = 0;
-    const preloadCache = new Map();
+    const preloadCache = new Map(); // keyed by src
 
     function wrap(i, len) {
       return ((i % len) + len) % len;
@@ -303,18 +594,16 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
 
     function preload(i) {
       if (!active) return;
-      const j = wrap(i, active.length);
-      const key = `${activeKey}:${j}`;
-      if (preloadCache.has(key)) return;
+      const src = active[wrap(i, active.length)].src;
+      if (preloadCache.has(src)) return;
       const im = new Image();
-      im.src = active[j].src;
-      preloadCache.set(key, im);
+      im.src = src;
+      preloadCache.set(src, im);
     }
 
-    let activeKey = null;
-    function show(listKey, i) {
-      active = photoLists[listKey];
-      activeKey = listKey;
+    // `list` is the photo sequence prev/next step through.
+    function show(list, i) {
+      active = list;
       if (!active || active.length === 0) return;
       index = wrap(i, active.length);
       const p = active[index];
@@ -332,12 +621,27 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       } else {
         counter.hidden = true;
       }
+      statusEl.textContent = p.status ?? "";
+      statusEl.hidden = !p.status;
+      statusEl.dataset.status = (p.status ?? "").toLowerCase();
       const parts = [];
       if (p.date) parts.push(p.date);
+      if (p.time) parts.push(p.time);
       if (p.place) parts.push(p.place);
       meta.textContent = parts.join(" · ");
+      tags.replaceChildren(
+        ...p.annotations.map((a) => {
+          const el = document.createElement("span");
+          el.className = "lb-tag";
+          el.textContent = a;
+          return el;
+        }),
+      );
+      tags.hidden = p.annotations.length === 0;
       attr.textContent = p.attribution ?? "";
       link.href = p.uri;
+      wiki.hidden = !p.wiki;
+      if (p.wiki) wiki.href = p.wiki;
       resetZoom();
       lightbox.classList.add("open");
       document.body.style.overflow = "hidden";
@@ -355,8 +659,14 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       return `${x}% ${y}%`;
     }
 
+    // Touch screens use the browser's own pinch-zoom instead of tap-to-zoom.
+    const coarsePointer = window.matchMedia(
+      "(hover: none) and (pointer: coarse)",
+    ).matches;
+
     imgWrap.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (coarsePointer) return;
       if (img.classList.contains("zoomed")) {
         resetZoom();
       } else {
@@ -377,16 +687,27 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       img.src = "";
     }
 
-    document.querySelectorAll("[data-card-index]").forEach((el) => {
-      el.addEventListener("click", (e) => {
+    // Catalog cards open the lightbox over just the cards currently visible
+    // (after filtering and sorting), in on-screen order.
+    document.querySelectorAll(".card").forEach((card) => {
+      card.querySelector("a").addEventListener("click", (e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        show(el.dataset.cardTab, parseInt(el.dataset.cardIndex, 10));
+        const grid = card.closest(".grid");
+        const photos = photoLists[grid.dataset.tab];
+        const list = [];
+        let start = 0;
+        for (const c of grid.querySelectorAll(".card:not([hidden])")) {
+          if (c === card) start = list.length;
+          const s = Number(c.dataset.start);
+          list.push(...photos.slice(s, s + Number(c.dataset.count)));
+        }
+        show(list, start);
       });
     });
 
-    prevBtn.addEventListener("click", () => show(activeKey, index - 1));
-    nextBtn.addEventListener("click", () => show(activeKey, index + 1));
+    prevBtn.addEventListener("click", () => show(active, index - 1));
+    nextBtn.addEventListener("click", () => show(active, index + 1));
     closeBtn.addEventListener("click", close);
     lightbox.addEventListener("click", (e) => {
       if (e.target === lightbox) close();
@@ -395,23 +716,304 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     document.addEventListener("keydown", (e) => {
       if (!lightbox.classList.contains("open")) return;
       if (e.key === "Escape") close();
-      else if (e.key === "ArrowLeft") show(activeKey, index - 1);
-      else if (e.key === "ArrowRight") show(activeKey, index + 1);
+      else if (e.key === "ArrowLeft") show(active, index - 1);
+      else if (e.key === "ArrowRight") show(active, index + 1);
     });
 
-    document.querySelectorAll(".tab").forEach((tab) => {
-      tab.addEventListener("click", () => {
-        const target = tab.dataset.tab;
-        document.querySelectorAll(".tab").forEach((t) => {
-          const isActive = t === tab;
-          t.classList.toggle("active", isActive);
-          t.setAttribute("aria-selected", isActive ? "true" : "false");
-        });
-        document.querySelectorAll(".grid[data-tab]").forEach((g) => {
-          g.hidden = g.dataset.tab !== target;
-        });
-      });
+    // ----- Lightbox: swipe between photos on touch screens -----
+    // The photo follows the finger; past the threshold it advances, and the
+    // next photo slides in from the side the swipe came from.
+    const SWIPE_THRESHOLD = 50;
+    const swipeMotion = !window.matchMedia("(prefers-reduced-motion: reduce)")
+      .matches;
+    let swipe = null;
+
+    function resetSwipe() {
+      imgWrap.style.transition = "";
+      imgWrap.style.transform = "";
+      imgWrap.style.opacity = "";
+    }
+
+    lightbox.addEventListener(
+      "touchstart",
+      (e) => {
+        // Leave pinch gestures alone, and don't swipe while pinch-zoomed in
+        // (a one-finger drag then pans around the photo).
+        const pinchZoomed = (window.visualViewport?.scale ?? 1) > 1.01;
+        if (
+          e.touches.length !== 1 ||
+          pinchZoomed ||
+          img.classList.contains("zoomed")
+        ) {
+          swipe = null;
+          return;
+        }
+        const t = e.touches[0];
+        swipe = { x: t.clientX, y: t.clientY, dx: 0, horizontal: null };
+      },
+      { passive: true },
+    );
+
+    lightbox.addEventListener(
+      "touchmove",
+      (e) => {
+        if (!swipe || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const dx = t.clientX - swipe.x;
+        const dy = t.clientY - swipe.y;
+        // Decide once whether this gesture is a horizontal swipe.
+        if (swipe.horizontal === null && Math.hypot(dx, dy) > 10) {
+          swipe.horizontal = Math.abs(dx) > Math.abs(dy);
+        }
+        if (!swipe.horizontal) return;
+        swipe.dx = dx;
+        if (swipeMotion) {
+          imgWrap.style.transition = "none";
+          imgWrap.style.transform = `translateX(${dx}px)`;
+          imgWrap.style.opacity = String(1 - Math.min(Math.abs(dx) / 500, 0.4));
+        }
+      },
+      { passive: true },
+    );
+
+    lightbox.addEventListener("touchend", () => {
+      if (!swipe) return;
+      const { dx, horizontal } = swipe;
+      swipe = null;
+      resetSwipe();
+      if (!horizontal || Math.abs(dx) < SWIPE_THRESHOLD) return;
+      const step = dx < 0 ? 1 : -1;
+      show(active, index + step);
+      if (swipeMotion) {
+        imgWrap.animate(
+          [
+            { transform: `translateX(${step * 60}px)`, opacity: 0 },
+            { transform: "translateX(0)", opacity: 1 },
+          ],
+          { duration: 220, easing: "ease-out" },
+        );
+      }
     });
+
+    lightbox.addEventListener("touchcancel", () => {
+      swipe = null;
+      resetSwipe();
+    });
+
+    // ----- Catalog: tabs, filters, sorting -----
+    const grids = [...document.querySelectorAll(".grid[data-tab]")];
+    const tabBtns = [...document.querySelectorAll(".tab")];
+    const searchInput = document.querySelector(".filter-search");
+    const statusBtns = [...document.querySelectorAll(".seg-btn")];
+    const chips = [...document.querySelectorAll(".chip[data-group]")];
+    const summary = document.querySelector(".filter-summary");
+    const empty = document.querySelector(".filter-empty");
+
+    const filters = {
+      tab: "wild",
+      query: "",
+      status: "all",
+      group: "all",
+      sort: "newest",
+    };
+
+    function matches(card, ignoreGroup = false) {
+      const d = card.dataset;
+      if (filters.query && !d.name.includes(filters.query)) return false;
+      if (filters.status !== "all" && d.status !== filters.status) return false;
+      if (!ignoreGroup && filters.group !== "all" && d.group !== filters.group)
+        return false;
+      return true;
+    }
+
+    const sorters = {
+      newest: (a, b) => a.dataset.order - b.dataset.order,
+      oldest: (a, b) => b.dataset.order - a.dataset.order,
+      name: (a, b) => a.dataset.sortName.localeCompare(b.dataset.sortName),
+      // Unknown rarity sorts last.
+      rarest: (a, b) =>
+        (Number(a.dataset.rarity) || Infinity) -
+        (Number(b.dataset.rarity) || Infinity),
+    };
+
+    function applyFilters() {
+      const grid = grids.find((g) => g.dataset.tab === filters.tab);
+      grids.forEach((g) => (g.hidden = g !== grid));
+
+      let shown = 0;
+      grids.forEach((g) => {
+        const cards = [...g.children];
+        let n = 0;
+        cards.forEach((c) => {
+          c.hidden = !matches(c);
+          if (!c.hidden) n++;
+        });
+        if (g === grid) {
+          shown = n;
+          cards.sort(sorters[filters.sort]).forEach((c) => g.append(c));
+        }
+        // Tab counts follow the filters so you can see matches in both tabs.
+        const tab = tabBtns.find((t) => t.dataset.tab === g.dataset.tab);
+        tab.querySelector(".tab-count").textContent = n;
+      });
+
+      // Group chip counts ignore the group filter itself, so each chip says
+      // how many you'd see if you picked it.
+      const counts = { all: 0 };
+      for (const c of grid.children) {
+        if (!matches(c, true)) continue;
+        counts.all++;
+        counts[c.dataset.group] = (counts[c.dataset.group] ?? 0) + 1;
+      }
+      chips.forEach((chip) => {
+        const n = counts[chip.dataset.group] ?? 0;
+        chip.querySelector(".chip-count").textContent = n;
+        chip.classList.toggle("empty", n === 0);
+      });
+
+      const total = grid.children.length;
+      summary.textContent =
+        shown === total ? `${total} observations` : `Showing ${shown} of ${total}`;
+      empty.hidden = shown > 0;
+    }
+
+    function setPressed(buttons, pressed) {
+      buttons.forEach((b) => {
+        const on = b === pressed;
+        b.classList.toggle("active", on);
+        b.setAttribute(b.getAttribute("role") === "tab" ? "aria-selected" : "aria-pressed", on);
+      });
+    }
+
+    tabBtns.forEach((tab) =>
+      tab.addEventListener("click", () => {
+        filters.tab = tab.dataset.tab;
+        setPressed(tabBtns, tab);
+        applyFilters();
+      }),
+    );
+    statusBtns.forEach((btn) =>
+      btn.addEventListener("click", () => {
+        filters.status = btn.dataset.status;
+        setPressed(statusBtns, btn);
+        applyFilters();
+      }),
+    );
+    chips.forEach((chip) =>
+      chip.addEventListener("click", () => {
+        filters.group = chip.dataset.group;
+        setPressed(chips, chip);
+        applyFilters();
+      }),
+    );
+    searchInput.addEventListener("input", () => {
+      filters.query = searchInput.value.trim().toLowerCase();
+      applyFilters();
+    });
+
+    // Sort menu: a button plus a listbox, so the open menu can be styled.
+    // Keyboard: arrows/Home/End move, Enter/Space pick, Escape/Tab close.
+    const sortBtn = document.querySelector(".filter-sort-btn");
+    const sortValue = document.querySelector(".filter-sort-value");
+    const sortMenu = document.querySelector(".sort-menu");
+    const sortOptions = [...sortMenu.querySelectorAll(".sort-option")];
+    let sortActive = 0;
+
+    function setSortActive(i) {
+      sortActive = (i + sortOptions.length) % sortOptions.length;
+      sortOptions.forEach((o, j) =>
+        o.classList.toggle("active", j === sortActive),
+      );
+      sortMenu.setAttribute(
+        "aria-activedescendant",
+        sortOptions[sortActive].id,
+      );
+    }
+
+    function openSortMenu() {
+      sortMenu.hidden = false;
+      sortBtn.setAttribute("aria-expanded", "true");
+      setSortActive(
+        sortOptions.findIndex((o) => o.dataset.value === filters.sort),
+      );
+      sortMenu.focus();
+    }
+
+    function closeSortMenu(returnFocus = true) {
+      if (sortMenu.hidden) return;
+      sortMenu.hidden = true;
+      sortBtn.setAttribute("aria-expanded", "false");
+      if (returnFocus) sortBtn.focus();
+    }
+
+    // Keeps the pill label, the custom menu and the native select in sync.
+    function setSort(value) {
+      filters.sort = value;
+      sortOptions.forEach((o) =>
+        o.setAttribute(
+          "aria-selected",
+          o.dataset.value === value ? "true" : "false",
+        ),
+      );
+      const option = sortOptions.find((o) => o.dataset.value === value);
+      sortValue.textContent = option.querySelector(".sort-name").textContent;
+      sortNative.value = value;
+      applyFilters();
+    }
+
+    function pickSort(option) {
+      closeSortMenu();
+      setSort(option.dataset.value);
+    }
+
+    // On touch screens the native select takes over; keep the visual pill
+    // out of the tab order and away from screen readers there.
+    const sortNative = document.querySelector(".filter-sort-native");
+    sortNative.addEventListener("change", () => setSort(sortNative.value));
+    if (coarsePointer) {
+      sortBtn.tabIndex = -1;
+      sortBtn.setAttribute("aria-hidden", "true");
+    }
+
+    sortBtn.addEventListener("click", () =>
+      sortMenu.hidden ? openSortMenu() : closeSortMenu(),
+    );
+    sortBtn.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        openSortMenu();
+      }
+    });
+    sortOptions.forEach((o, i) => {
+      o.addEventListener("click", () => pickSort(o));
+      o.addEventListener("mousemove", () => setSortActive(i));
+    });
+    sortMenu.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") setSortActive(sortActive + 1);
+      else if (e.key === "ArrowUp") setSortActive(sortActive - 1);
+      else if (e.key === "Home") setSortActive(0);
+      else if (e.key === "End") setSortActive(sortOptions.length - 1);
+      else if (e.key === "Enter" || e.key === " ")
+        pickSort(sortOptions[sortActive]);
+      else if (e.key === "Escape") closeSortMenu();
+      else if (e.key === "Tab") return closeSortMenu(false);
+      else return;
+      e.preventDefault();
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".filter-sort")) closeSortMenu(false);
+    });
+    document
+      .querySelector("[data-clear-filters]")
+      .addEventListener("click", () => {
+        searchInput.value = "";
+        Object.assign(filters, { query: "", status: "all", group: "all" });
+        setPressed(statusBtns, statusBtns[0]);
+        setPressed(chips, chips[0]);
+        applyFilters();
+      });
+
+    applyFilters();
 
     // ----- Gallery: cycling image mosaic -----
     const pool = photoLists.gallery || [];
@@ -425,7 +1027,7 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
 
     tileEls.forEach((tile) => {
       tile.addEventListener("click", () => {
-        show("gallery", parseInt(tile.dataset.poolIndex, 10));
+        show(pool, parseInt(tile.dataset.poolIndex, 10));
       });
     });
 
@@ -498,6 +1100,391 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
 </script>
 
 <style>
+  /* ----- Stats strip ----- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, auto) minmax(260px, 1fr);
+    gap: 0.75rem;
+    margin: 0 0 1.5rem;
+  }
+  .stat {
+    margin: 0;
+    padding: 0.75rem 1rem;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.1rem;
+  }
+  .stat-value {
+    font-size: 1.6rem;
+    font-weight: 600;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-label {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+  .stat-months {
+    justify-content: space-between;
+    gap: 0.4rem;
+  }
+  .months {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 2px;
+  }
+  /* Each column is the hover target; the bar inside is capped thin. */
+  .month {
+    position: relative;
+    height: 68px;
+    padding: 1rem 0 1.1rem;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+  .month-bar {
+    width: min(100%, 14px);
+    background: var(--muted);
+    opacity: 0.55;
+    border-radius: 4px 4px 0 0;
+    transition: opacity 0.15s;
+  }
+  .month.peak .month-bar,
+  .month:hover .month-bar {
+    background: var(--accent);
+    opacity: 1;
+  }
+  .month-value {
+    position: absolute;
+    top: 0;
+    font-size: 0.7rem;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .month-label {
+    position: absolute;
+    bottom: 0;
+    font-size: 0.68rem;
+    color: var(--muted);
+  }
+  .month::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 0.35rem);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--card);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.55rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s;
+    z-index: 5;
+  }
+  /* Keep edge tooltips inside the strip. */
+  .month:nth-child(-n + 2)::after {
+    left: 0;
+    transform: none;
+  }
+  .month:nth-last-child(-n + 2)::after {
+    left: auto;
+    right: 0;
+    transform: none;
+  }
+  .month:hover::after {
+    opacity: 1;
+  }
+  @media (max-width: 760px) {
+    .stats {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .stat-months {
+      grid-column: 1 / -1;
+    }
+  }
+
+  /* ----- Catalog filters ----- */
+  .filters {
+    margin: 0 0 1.25rem;
+  }
+  .filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .filter-search,
+  .filter-sort-btn {
+    font: inherit;
+    font-size: 0.9rem;
+    color: var(--fg);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    transition: border-color 0.15s;
+  }
+  .filter-search {
+    flex: 1 1 220px;
+    min-width: 0;
+    padding: 0.45rem 1rem;
+  }
+  .filter-search::placeholder {
+    color: var(--muted);
+  }
+  .filter-search:focus-visible,
+  .seg-btn:focus-visible,
+  .chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Sort: a pill button ("Sort by <choice>") that opens a styled listbox. */
+  .filter-sort {
+    position: relative;
+  }
+  .filter-sort-native {
+    display: none;
+  }
+  @media (hover: none) and (pointer: coarse) {
+    /* Invisible, but covers the pill so taps open the native picker.
+       16px keeps iOS from zooming in when it gets focus. */
+    .filter-sort-native {
+      display: block;
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      font-size: 16px;
+      cursor: pointer;
+    }
+  }
+  .filter-sort-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.9rem 0.45rem 1rem;
+    cursor: pointer;
+  }
+  .filter-sort-btn:hover,
+  .filter-sort-btn[aria-expanded="true"] {
+    border-color: var(--muted);
+  }
+  /* Keyboard focus shows as a brighter border, not a ring. */
+  .filter-sort-btn:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .filter-sort-label {
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .filter-sort-value {
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .filter-sort-chevron {
+    width: 0.9rem;
+    height: 0.9rem;
+    margin-left: 0.35rem;
+    color: var(--muted);
+    transition:
+      color 0.15s,
+      transform 0.2s ease;
+  }
+  .filter-sort-btn:hover .filter-sort-chevron {
+    color: var(--accent);
+  }
+  .filter-sort-btn[aria-expanded="true"] .filter-sort-chevron {
+    transform: rotate(180deg);
+  }
+
+  .sort-menu {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    right: 0;
+    z-index: 20;
+    min-width: 100%;
+    margin: 0;
+    padding: 0.35rem;
+    list-style: none;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+    animation: sort-menu-in 0.14s ease-out;
+  }
+  .sort-menu[hidden] {
+    display: none;
+  }
+  .sort-menu:focus {
+    outline: none;
+  }
+  @keyframes sort-menu-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+  .sort-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.5rem 0.75rem 0.5rem 0.6rem;
+    border-radius: 8px;
+    color: var(--fg);
+    font-size: 0.9rem;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .sort-option.active {
+    background: var(--chip);
+  }
+  .sort-check {
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    margin-top: 0.15rem;
+    color: var(--accent);
+    visibility: hidden;
+  }
+  .sort-option[aria-selected="true"] .sort-check {
+    visibility: visible;
+  }
+  .sort-option[aria-selected="true"] .sort-name {
+    font-weight: 600;
+  }
+  .sort-text {
+    display: flex;
+    flex-direction: column;
+  }
+  .sort-hint {
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  /* On narrow screens the pill sits at the left edge; open the menu rightward. */
+  @media (max-width: 600px) {
+    .sort-menu {
+      left: 0;
+      right: auto;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sort-menu {
+      animation: none;
+    }
+  }
+  .segmented {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.15rem;
+    padding: 0.2rem;
+    background: var(--chip);
+    border-radius: 999px;
+  }
+  .seg-btn {
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--muted);
+    background: transparent;
+    border: none;
+    border-radius: 999px;
+    padding: 0.3rem 0.8rem;
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      color 0.15s;
+  }
+  .seg-btn:hover {
+    color: var(--fg);
+  }
+  .seg-btn.active {
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.75rem;
+  }
+  .chip {
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.25rem 0.75rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition:
+      background 0.15s,
+      color 0.15s,
+      border-color 0.15s,
+      opacity 0.15s;
+  }
+  .chip:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+  .chip.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+  .chip.empty:not(.active) {
+    opacity: 0.4;
+  }
+  .chip-count {
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
+  }
+  .filter-summary {
+    margin: 0.75rem 0 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+  .filter-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--muted);
+  }
+  .filter-empty[hidden] {
+    display: none;
+  }
+  .filter-empty p {
+    margin: 0 0 0.75rem;
+  }
+  @media (max-width: 600px) {
+    /* Keep the four status options on one row. */
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(4, auto);
+      justify-content: space-between;
+      width: 100%;
+    }
+    .seg-btn {
+      font-size: 0.8rem;
+      padding: 0.3rem 0.55rem;
+      white-space: nowrap;
+    }
+  }
+
   .view-switch {
     display: inline-flex;
     gap: 0.25rem;
@@ -545,7 +1532,8 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     border: none;
     border-radius: 8px;
     overflow: hidden;
-    background: var(--thumb);
+    /* Outlined leaf shows until the photo loads over it. */
+    background: var(--leaf-outline) center / 40px no-repeat var(--thumb);
     cursor: zoom-in;
   }
   .tile.wide {
@@ -602,45 +1590,56 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     outline-offset: 2px;
   }
 
+  /* Tab bar sits on a vine instead of a rule. */
   .tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.25rem;
     margin: 0 0 1.5rem;
-    border-bottom: 1px solid var(--border);
+    padding-bottom: 22px;
+    background: url("/nature/vine.svg") left bottom / 88px 22px;
+    background-repeat: round no-repeat;
   }
   .tab {
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
     padding: 0.6rem 1rem;
     font: inherit;
     color: var(--muted);
     cursor: pointer;
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    margin-bottom: -1px;
-    transition:
-      color 0.15s,
-      border-color 0.15s;
+    gap: 0.5rem;
+    transition: color 0.15s;
   }
   .tab:hover {
     color: var(--fg);
   }
   .tab.active {
     color: var(--accent);
-    border-bottom-color: var(--accent);
   }
+  .tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  /* Counts sit in a leaf, masked from an SVG that stretches to fit. */
   .tab-count {
     font-size: 0.78rem;
+    min-width: 3rem;
+    padding: 0.2rem 0.95rem;
+    text-align: center;
     background: var(--chip);
-    padding: 0.05rem 0.45rem;
-    border-radius: 999px;
     color: var(--muted);
+    mask: url("/nature/leaf-badge.svg") center / 100% 100% no-repeat;
+    transition:
+      background 0.2s,
+      color 0.2s;
   }
   .tab.active .tab-count {
-    background: rgba(190, 220, 127, 0.18);
-    color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
   }
 
   .grid {
@@ -654,11 +1653,14 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
   .grid[hidden] {
     display: none;
   }
+  /* Cards read like field-guide specimen labels: photo over a tan label. */
   .card a {
-    display: block;
-    color: inherit;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    color: var(--ink);
     text-decoration: none;
-    background: var(--card);
+    background: var(--label);
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
@@ -668,9 +1670,20 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       box-shadow 0.15s;
     cursor: zoom-in;
   }
+  /* Cards lift and tilt slightly on hover, alternating direction so the
+     grid doesn't lean one way. */
   .card a:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+    transform: translateY(-3px) rotate(-0.6deg);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.5);
+  }
+  .card:nth-child(even) a:hover {
+    transform: translateY(-3px) rotate(0.6deg);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card a:hover,
+    .card:nth-child(even) a:hover {
+      transform: translateY(-2px);
+    }
   }
   .thumb {
     position: relative;
@@ -680,7 +1693,7 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     height: 220px;
     object-fit: cover;
     display: block;
-    background: var(--thumb);
+    background: var(--leaf-outline) center / 48px no-repeat var(--thumb);
   }
   .badge {
     position: absolute;
@@ -694,34 +1707,48 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     border-radius: 999px;
     letter-spacing: 0.02em;
   }
+  /* Research grade: an amber flask, distinct from the green UI and photos. */
   .badge-rg {
     left: 0.5rem;
     right: auto;
-    background: var(--accent);
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    background: var(--research);
     color: var(--on-accent);
     display: inline-flex;
     align-items: center;
-    gap: 0.2rem;
+    justify-content: center;
+  }
+  .badge-rg :global(.rg-icon) {
+    width: 1.05rem;
+    height: 1.05rem;
   }
   .caption {
-    padding: 0.65rem 0.8rem 0.8rem;
+    flex: 1;
+    padding: 0.7rem 0.85rem 0.8rem;
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
+    gap: 0.1rem;
   }
   .common {
+    font-family: var(--serif);
     font-weight: 600;
-    font-size: 0.95rem;
+    font-size: 1.05rem;
+    line-height: 1.3;
   }
   .sci {
+    font-family: var(--serif);
     font-style: italic;
-    color: var(--muted);
-    font-size: 0.82rem;
+    color: var(--ink-muted);
+    font-size: 0.88rem;
   }
   time {
-    color: var(--muted);
-    font-size: 0.78rem;
-    margin-top: 0.25rem;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    margin-top: auto;
+    padding-top: 0.35rem;
+    font-variant-numeric: tabular-nums;
   }
 
   .lightbox {
@@ -733,6 +1760,8 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     justify-content: center;
     z-index: 1000;
     padding: 2rem;
+    /* Horizontal drags are ours (swipe between photos); keep pinch-zoom. */
+    touch-action: pan-y pinch-zoom;
     cursor: zoom-out;
   }
   .lightbox.open {
@@ -788,10 +1817,12 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     gap: 0.5rem;
   }
   .lb-common {
+    font-family: var(--serif);
     font-weight: 600;
-    font-size: 1.05rem;
+    font-size: 1.15rem;
   }
   .lb-sci {
+    font-family: var(--serif);
     font-style: italic;
     color: var(--muted);
   }
@@ -805,11 +1836,15 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
   .lb-counter[hidden] {
     display: none;
   }
+  .lb-rg :global(.rg-icon) {
+    width: 0.95rem;
+    height: 0.95rem;
+  }
   .lb-rg {
     color: var(--on-accent);
     font-size: 0.78rem;
     font-weight: 600;
-    background: var(--accent);
+    background: var(--research);
     padding: 0.1rem 0.55rem;
     border-radius: 999px;
     display: inline-flex;
@@ -820,10 +1855,51 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
   .lb-rg[hidden] {
     display: none;
   }
+  /* Status in Puerto Rico, in the same leaf shape as the tab counts. */
+  .lb-status {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.15rem 0.95rem;
+    background: var(--chip);
+    color: var(--fg);
+    mask: url("/nature/leaf-badge.svg") center / 100% 100% no-repeat;
+    align-self: center;
+  }
+  .lb-status[data-status="endemic"] {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .lb-status[hidden] {
+    display: none;
+  }
   .lb-meta {
     color: var(--muted);
     font-size: 0.82rem;
     margin-top: 0.15rem;
+  }
+  .lb-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+  }
+  .lb-tags[hidden] {
+    display: none;
+  }
+  /* Tags are created at runtime, so they need :global to get styled. */
+  .lb-tags :global(.lb-tag) {
+    font-size: 0.75rem;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    padding: 0.05rem 0.55rem;
+    border-radius: 999px;
+  }
+  .lb-wiki {
+    color: var(--accent);
+    font-size: 0.8rem;
+  }
+  .lb-wiki[hidden] {
+    display: none;
   }
   .lb-footer {
     margin-top: 0.4rem;
@@ -897,5 +1973,11 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     right: 1rem;
     top: 50%;
     transform: translateY(-50%);
+  }
+  /* Touch screens swipe between photos instead of using the arrows. */
+  @media (hover: none) and (pointer: coarse) {
+    .lb-nav {
+      display: none;
+    }
   }
 </style>

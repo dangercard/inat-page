@@ -1,0 +1,61 @@
+---
+// A line-art fern frond, generated so the leaflets taper evenly toward the
+// tip. Purely decorative; colour comes from `currentColor`.
+interface Props {
+  class?: string;
+}
+const { class: className } = Astro.props;
+
+const H = 200;
+const PAIRS = 14;
+
+// Stem: a gentle S-curve from the base (bottom) to the tip (top).
+const stemAt = (t: number) => ({
+  x: 60 + 10 * Math.sin(t * Math.PI * 1.2),
+  y: H - 8 - t * (H - 20),
+});
+
+const stem = Array.from({ length: 41 }, (_, i) => {
+  const p = stemAt(i / 40);
+  return `${i ? "L" : "M"}${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+}).join(" ");
+
+// A leaflet is a lens from its base to its tip, pointing along `angle`.
+function leaflet(x: number, y: number, angle: number, len: number) {
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  const tx = x + dx * len;
+  const ty = y + dy * len;
+  const w = len * 0.32;
+  const mx = x + dx * len * 0.5;
+  const my = y + dy * len * 0.5;
+  const c1 = `${(mx - dy * w).toFixed(1)} ${(my + dx * w).toFixed(1)}`;
+  const c2 = `${(mx + dy * w).toFixed(1)} ${(my - dx * w).toFixed(1)}`;
+  return `M${x.toFixed(1)} ${y.toFixed(1)} Q${c1} ${tx.toFixed(1)} ${ty.toFixed(1)} Q${c2} ${x.toFixed(1)} ${y.toFixed(1)}`;
+}
+
+const leaflets: string[] = [];
+for (let i = 0; i < PAIRS; i++) {
+  const t = 0.08 + (i / PAIRS) * 0.88;
+  const { x, y } = stemAt(t);
+  const len = 8 + 38 * Math.pow(1 - t, 0.9);
+  // Leaflets sweep upward from the stem on both sides.
+  leaflets.push(leaflet(x, y, (-Math.PI * 5) / 6 + t * 0.4, len));
+  leaflets.push(leaflet(x, y, -Math.PI / 6 - t * 0.4, len));
+}
+---
+
+<svg
+  class={className}
+  viewBox={`0 0 120 ${H}`}
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.4"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+  focusable="false"
+>
+  <path d={stem} />
+  {leaflets.map((d) => <path d={d} />)}
+</svg>

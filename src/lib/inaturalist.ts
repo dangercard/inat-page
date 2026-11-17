@@ -19,21 +19,56 @@ export interface Photo {
 }
 
 export interface Taxon {
+  id: number;
   name: string;
   preferred_common_name?: string;
   rank: string;
+  rank_level?: number;
+  min_species_taxon_id?: number;
   iconic_taxon_name?: string;
+  // Establishment flags, relative to the places the observation falls in.
+  endemic?: boolean;
+  native?: boolean;
+  introduced?: boolean;
+  threatened?: boolean;
+  wikipedia_url?: string | null;
+  // Total observations of this taxon across iNaturalist.
+  observations_count?: number;
+}
+
+export interface Annotation {
+  controlled_attribute_id: number;
+  controlled_value_id: number;
 }
 
 export interface Observation {
   id: number;
   uri: string;
   observed_on: string | null;
+  // ISO timestamp in the observer's local offset, e.g. 2026-11-17T07:44:03-04:00
+  time_observed_at: string | null;
   species_guess: string | null;
   place_guess: string | null;
   quality_grade: string;
   taxon: Taxon | null;
   photos: Photo[];
+  annotations?: Annotation[];
+}
+
+export type Establishment = "endemic" | "native" | "introduced";
+
+export function establishment(taxon: Taxon | null): Establishment | null {
+  if (!taxon) return null;
+  if (taxon.endemic) return "endemic";
+  if (taxon.introduced) return "introduced";
+  if (taxon.native) return "native";
+  return null;
+}
+
+interface ControlledTerm {
+  id: number;
+  label: string;
+  values?: { id: number; label: string }[];
 }
 
 interface ApiResponse {
@@ -84,4 +119,27 @@ export async function fetchAllObservations(userLogin: string): Promise<Observati
   }
 
   return all;
+}
+
+// Annotations come back as bare ids; this resolves them to labels such as
+// { attribute: "Life Stage", value: "Adult" }.
+export async function fetchAnnotationLabeler() {
+  const res = await fetchWithRetry(`${API_BASE}/controlled_terms`, {
+    headers: { "User-Agent": "bio-page" },
+  });
+  if (!res.ok) throw new Error(`iNaturalist API ${res.status}: ${await res.text()}`);
+  const { results } = (await res.json()) as { results: ControlledTerm[] };
+
+  const attributes = new Map<number, string>();
+  const values = new Map<number, string>();
+  for (const term of results) {
+    attributes.set(term.id, term.label);
+    for (const v of term.values ?? []) values.set(v.id, v.label);
+  }
+
+  return (a: Annotation) => {
+    const attribute = attributes.get(a.controlled_attribute_id);
+    const value = values.get(a.controlled_value_id);
+    return attribute && value ? { attribute, value } : null;
+  };
 }
