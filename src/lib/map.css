@@ -1,0 +1,127 @@
+/* Leaflet builds its own DOM, so these styles are global. */
+
+.leaflet-container {
+  background: var(--bg);
+  font: inherit;
+}
+
+/* Turn the light OSM tiles dark: invert, then rotate hues back so water
+   stays blue-ish and land green-ish, and mute everything a bit. */
+.map-tiles {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.55)
+    contrast(0.9);
+}
+
+/* Single observation: a bright dot with a dark ring so it reads on any tile. */
+.map-pin span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--accent);
+  transition: transform 0.15s ease;
+}
+.map-pin:hover span,
+.map-pin:focus-visible span {
+  transform: scale(1.25);
+}
+
+/* Cluster: count in a dark disc ringed in the accent. */
+.map-cluster span {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--fg);
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 4px rgba(190, 220, 127, 0.18);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Popups */
+.map-popup .leaflet-popup-content-wrapper,
+.map-popup .leaflet-popup-tip {
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
+}
+.map-popup .leaflet-popup-content-wrapper {
+  border-radius: 10px;
+}
+.map-popup .leaflet-popup-content {
+  margin: 0.6rem;
+}
+.map-popup a.leaflet-popup-close-button {
+  color: var(--muted);
+}
+.map-popup a.leaflet-popup-close-button:hover {
+  color: var(--fg);
+}
+.map-popup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.map-popup-body img {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+  margin-bottom: 0.4rem;
+  background: var(--thumb);
+}
+.map-popup-name {
+  font-family: var(--serif);
+  font-size: 1rem;
+  line-height: 1.25;
+}
+.map-popup-sci {
+  font-family: var(--serif);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.map-popup-meta {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.map-popup-btn {
+  margin-top: 0.5rem;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+}
+
+/* Controls */
+.leaflet-bar a,
+.leaflet-bar a:hover {
+  background: var(--card);
+  color: var(--fg);
+  border-bottom-color: var(--border);
+}
+.leaflet-bar a:hover {
+  color: var(--accent);
+}
+.leaflet-bar {
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+}
+.leaflet-control-attribution {
+  background: rgba(4, 12, 6, 0.75) !important;
+  color: var(--muted);
+}
+.leaflet-control-attribution a {
+  color: var(--accent);
+}

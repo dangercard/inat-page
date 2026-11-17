@@ -7,6 +7,7 @@ import {
   establishment,
   fetchAllObservations,
   fetchAnnotationLabeler,
+  fetchOrders,
   photoUrl,
 } from "../lib/inaturalist";
 import type { Establishment, Observation } from "../lib/inaturalist";
@@ -16,6 +17,43 @@ const [observations, labelAnnotation] = await Promise.all([
   fetchAnnotationLabeler(),
 ]);
 const withPhotos = observations.filter((o) => o.photos.length > 0);
+
+// Taxonomic order of each observation (Beetles, Spiders, ...), for the
+// second row of catalog filters.
+const lineage = (o: Observation) =>
+  o.taxon ? [...(o.taxon.ancestor_ids ?? []), o.taxon.id] : [];
+const orders = await fetchOrders([
+  ...new Set(observations.flatMap(lineage)),
+]);
+// Shorter names where iNaturalist's are long lists ("Ants, Bees, Wasps, and
+// Sawflies"); anything unlisted uses iNat's common name.
+const ORDER_LABELS: Record<string, string> = {
+  Lepidoptera: "Butterflies & moths",
+  Coleoptera: "Beetles",
+  Hymenoptera: "Ants, bees & wasps",
+  Hemiptera: "True bugs",
+  Diptera: "Flies",
+  Orthoptera: "Grasshoppers & crickets",
+  Odonata: "Dragonflies",
+  Blattodea: "Cockroaches & termites",
+  Mantodea: "Mantises",
+  Phasmida: "Stick insects",
+  Araneae: "Spiders",
+  Opiliones: "Harvestmen",
+  Amblypygi: "Whip spiders",
+  Squamata: "Lizards & snakes",
+  Testudines: "Turtles",
+  Anura: "Frogs",
+};
+function orderOf(o: Observation) {
+  const order = lineage(o)
+    .map((id) => orders.get(id))
+    .find(Boolean);
+  if (!order) return "Other";
+  return (
+    ORDER_LABELS[order.name] ?? order.preferred_common_name ?? order.name
+  );
+}
 
 // Friendly names for iNaturalist's iconic taxa; anything unlisted is "Other".
 const GROUP_LABELS: Record<string, string> = {
@@ -129,6 +167,110 @@ const groups = [...groupCounts.keys()].sort(
     (a === "Other" ? 1 : 0) - (b === "Other" ? 1 : 0) ||
     groupCounts.get(b)! - groupCounts.get(a)!,
 );
+
+// Orders within each group, most-observed first ("Other" last). Only groups
+// spanning two or more orders get a second filter row.
+const subgroups = new Map<string, string[]>();
+for (const g of groups) {
+  const counts = new Map<string, number>();
+  for (const o of withPhotos) {
+    if (groupOf(o) !== g) continue;
+    counts.set(orderOf(o), (counts.get(orderOf(o)) ?? 0) + 1);
+  }
+  if (counts.size < 2) continue;
+  subgroups.set(
+    g,
+    [...counts.keys()].sort(
+      (a, b) =>
+        (a === "Other" ? 1 : 0) - (b === "Other" ? 1 : 0) ||
+        counts.get(b)! - counts.get(a)!,
+    ),
+  );
+}
+
+// ----- Map -----
+// Only observations with exact coordinates; obscured ones are randomized
+// within ~30 km, which would put pins in the wrong towns.
+const mapPoints = tabs.flatMap((t) =>
+  t.obs.flatMap((o, i) => {
+    if (o.obscured || !o.location) return [];
+    const [lat, lng] = o.location.split(",").map(Number);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+    const status = establishment(o.taxon);
+    return [
+      {
+        lat,
+        lng,
+        common: o.taxon?.preferred_common_name ?? o.species_guess ?? "Unknown",
+        scientific: o.taxon?.name ?? null,
+        date: o.observed_on,
+        status: status && STATUS_LABELS[status],
+        thumb: photoUrl(o.photos[0], "medium"),
+        tab: t.key,
+        start: cardStarts[t.key][i],
+        count: o.photos.length,
+      },
+    ];
+  }),
+);
+const hiddenFromMap = withPhotos.length - mapPoints.length;
+
+// ----- Life list -----
+// Each species once (subspecies roll up), with where its photos sit in the
+// tab photo lists so the lightbox can show every observation of it.
+interface LifeEntry {
+  common: string;
+  scientific: string;
+  group: string;
+  status: string | null;
+  thumb: string;
+  firstSeen: string | null;
+  count: number;
+  wild: boolean;
+  segments: { tab: string; start: number; count: number }[];
+}
+const lifeById = new Map<number, LifeEntry>();
+for (const t of tabs) {
+  t.obs.forEach((o, i) => {
+    const tx = o.taxon;
+    if (!tx || (tx.rank_level ?? 99) > 10) return;
+    const id = tx.min_species_taxon_id ?? tx.id;
+    let entry = lifeById.get(id);
+    if (!entry) {
+      const status = establishment(tx);
+      entry = {
+        common: tx.preferred_common_name ?? o.species_guess ?? tx.name,
+        scientific: tx.name.split(" ").slice(0, 2).join(" "),
+        group: groupOf(o),
+        status: status && STATUS_LABELS[status],
+        thumb: photoUrl(o.photos[0], "small"),
+        firstSeen: o.observed_on,
+        count: 0,
+        wild: false,
+        segments: [],
+      };
+      lifeById.set(id, entry);
+    }
+    entry.count++;
+    entry.wild ||= t.key === "wild";
+    entry.segments.push({
+      tab: t.key,
+      start: cardStarts[t.key][i],
+      count: o.photos.length,
+    });
+    if (o.observed_on && (!entry.firstSeen || o.observed_on < entry.firstSeen)) {
+      entry.firstSeen = o.observed_on;
+    }
+  });
+}
+const lifeGroups = groups
+  .map((g) => ({
+    group: g,
+    species: [...lifeById.values()]
+      .filter((e) => e.group === g)
+      .sort((a, b) => a.common.localeCompare(b.common)),
+  }))
+  .filter((g) => g.species.length > 0);
 
 const SORTS = [
   { value: "newest", label: "Newest first" },
@@ -268,7 +410,23 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       role="tab"
       aria-selected="false"
     >
-      Catalog
+      Sightings
+    </button>
+    <button
+      class="view-btn"
+      data-view="life"
+      role="tab"
+      aria-selected="false"
+    >
+      Species
+    </button>
+    <button
+      class="view-btn"
+      data-view="map"
+      role="tab"
+      aria-selected="false"
+    >
+      Map
     </button>
   </div>
 
@@ -413,6 +571,26 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
           ))
         }
       </div>
+      {
+        [...subgroups].map(([g, list]) => (
+          <div
+            class="chips subchips"
+            role="group"
+            aria-label={`${g} by order`}
+            data-for-group={g}
+            hidden
+          >
+            <button class="chip active" data-order-filter="all" aria-pressed="true">
+              All {g.toLowerCase()} <span class="chip-count" />
+            </button>
+            {list.map((name) => (
+              <button class="chip" data-order-filter={name} aria-pressed="false">
+                {name} <span class="chip-count" />
+              </button>
+            ))}
+          </div>
+        ))
+      }
       <p class="filter-summary" aria-live="polite"></p>
     </div>
 
@@ -431,6 +609,7 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
                 class="card"
                 data-order={i}
                 data-group={groupOf(obs)}
+                data-taxon-order={orderOf(obs)}
                 data-status={establishment(obs.taxon) ?? ""}
                 data-name={`${common} ${scientific ?? ""}`.toLowerCase()}
                 data-sort-name={common.toLowerCase()}
@@ -477,6 +656,80 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       <p>No observations match these filters.</p>
       <button class="chip" data-clear-filters>Clear filters</button>
     </div>
+  </section>
+
+  <section id="view-life" class="view" data-view="life" hidden>
+    <p class="life-intro">
+      {lifeById.size} species
+    </p>
+    {
+      lifeGroups.map(({ group, species }) => (
+        <section class="life-group" aria-labelledby={`life-${group}`}>
+          <h2 class="life-heading" id={`life-${group}`}>
+            {group} <span class="life-heading-count">{species.length}</span>
+          </h2>
+          <ul class="life-list">
+            {species.map((e) => (
+              <li>
+                <button
+                  class="life-row"
+                  data-segments={JSON.stringify(e.segments)}
+                >
+                  <img src={e.thumb} alt="" loading="lazy" width="56" height="56" />
+                  <span class="life-names">
+                    <span class="life-common">{e.common}</span>
+                    {e.scientific !== e.common && (
+                      <span class="life-sci">{e.scientific}</span>
+                    )}
+                    <span class="life-meta">
+                      {[
+                        e.firstSeen && `First seen ${e.firstSeen}`,
+                        `${e.count} observation${e.count === 1 ? "" : "s"}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                    {(e.status || !e.wild) && (
+                      <span class="life-tags">
+                        {e.status && (
+                          <span
+                            class="life-status"
+                            data-status={e.status.toLowerCase()}
+                          >
+                            {e.status}
+                          </span>
+                        )}
+                        {!e.wild && (
+                          <span class="life-captive">Cultivated / captive</span>
+                        )}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))
+    }
+  </section>
+
+  <section id="view-map" class="view" data-view="map" hidden>
+    <div
+      class="map"
+      id="map"
+      role="region"
+      aria-label="Map of observations in Puerto Rico"
+      data-points={JSON.stringify(mapPoints)}
+    >
+    </div>
+    <p class="map-note">
+      {mapPoints.length} observations with exact locations.
+      {
+        hiddenFromMap > 0 &&
+          ` ${hiddenFromMap} more have obscured locations (iNaturalist only shares a random point within ~30 km), so they aren't shown.`
+      }
+    </p>
   </section>
 
   <div
@@ -806,6 +1059,7 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     const searchInput = document.querySelector(".filter-search");
     const statusBtns = [...document.querySelectorAll(".seg-btn")];
     const chips = [...document.querySelectorAll(".chip[data-group]")];
+    const subRows = [...document.querySelectorAll(".subchips")];
     const summary = document.querySelector(".filter-summary");
     const empty = document.querySelector(".filter-empty");
 
@@ -814,14 +1068,19 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       query: "",
       status: "all",
       group: "all",
+      order: "all",
       sort: "newest",
     };
 
-    function matches(card, ignoreGroup = false) {
+    // The ignore flags let chip counts say how many you'd see if you picked
+    // that chip.
+    function matches(card, { ignoreGroup = false, ignoreOrder = false } = {}) {
       const d = card.dataset;
       if (filters.query && !d.name.includes(filters.query)) return false;
       if (filters.status !== "all" && d.status !== filters.status) return false;
       if (!ignoreGroup && filters.group !== "all" && d.group !== filters.group)
+        return false;
+      if (!ignoreOrder && filters.order !== "all" && d.taxonOrder !== filters.order)
         return false;
       return true;
     }
@@ -857,11 +1116,9 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
         tab.querySelector(".tab-count").textContent = n;
       });
 
-      // Group chip counts ignore the group filter itself, so each chip says
-      // how many you'd see if you picked it.
       const counts = { all: 0 };
       for (const c of grid.children) {
-        if (!matches(c, true)) continue;
+        if (!matches(c, { ignoreGroup: true, ignoreOrder: true })) continue;
         counts.all++;
         counts[c.dataset.group] = (counts[c.dataset.group] ?? 0) + 1;
       }
@@ -869,6 +1126,24 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
         const n = counts[chip.dataset.group] ?? 0;
         chip.querySelector(".chip-count").textContent = n;
         chip.classList.toggle("empty", n === 0);
+      });
+
+      // Second row: orders within the picked group.
+      subRows.forEach((row) => {
+        row.hidden = row.dataset.forGroup !== filters.group;
+        if (row.hidden) return;
+        const orderCounts = { all: 0 };
+        for (const c of grid.children) {
+          if (!matches(c, { ignoreOrder: true })) continue;
+          orderCounts.all++;
+          const o = c.dataset.taxonOrder;
+          orderCounts[o] = (orderCounts[o] ?? 0) + 1;
+        }
+        row.querySelectorAll(".chip").forEach((chip) => {
+          const n = orderCounts[chip.dataset.orderFilter] ?? 0;
+          chip.querySelector(".chip-count").textContent = n;
+          chip.classList.toggle("empty", n === 0);
+        });
       });
 
       const total = grid.children.length;
@@ -899,13 +1174,32 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
         applyFilters();
       }),
     );
+    function resetOrder() {
+      filters.order = "all";
+      subRows.forEach((row) => {
+        const subChips = [...row.querySelectorAll(".chip")];
+        setPressed(subChips, subChips[0]);
+      });
+    }
+
     chips.forEach((chip) =>
       chip.addEventListener("click", () => {
         filters.group = chip.dataset.group;
         setPressed(chips, chip);
+        resetOrder();
         applyFilters();
       }),
     );
+    subRows.forEach((row) => {
+      const subChips = [...row.querySelectorAll(".chip")];
+      subChips.forEach((chip) =>
+        chip.addEventListener("click", () => {
+          filters.order = chip.dataset.orderFilter;
+          setPressed(subChips, chip);
+          applyFilters();
+        }),
+      );
+    });
     searchInput.addEventListener("input", () => {
       filters.query = searchInput.value.trim().toLowerCase();
       applyFilters();
@@ -1010,6 +1304,7 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
         Object.assign(filters, { query: "", status: "all", group: "all" });
         setPressed(statusBtns, statusBtns[0]);
         setPressed(chips, chips[0]);
+        resetOrder();
         applyFilters();
       });
 
@@ -1090,7 +1385,30 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
       });
       if (name === "gallery") startCycling();
       else stopCycling();
+      // The map module (loaded separately) listens for this.
+      document.dispatchEvent(new CustomEvent("viewchange", { detail: name }));
     }
+
+    // Map popups and life-list rows ask to open photos in the lightbox,
+    // either one observation ({tab, start, count}) or several ({segments}).
+    document.addEventListener("open-photos", (e) => {
+      const segments = e.detail.segments ?? [e.detail];
+      show(
+        segments.flatMap(({ tab, start, count }) =>
+          photoLists[tab].slice(start, start + count),
+        ),
+        0,
+      );
+    });
+    document.querySelectorAll(".life-row").forEach((row) =>
+      row.addEventListener("click", () =>
+        document.dispatchEvent(
+          new CustomEvent("open-photos", {
+            detail: { segments: JSON.parse(row.dataset.segments) },
+          }),
+        ),
+      ),
+    );
     viewBtns.forEach((b) => {
       b.addEventListener("click", () => setView(b.dataset.view));
     });
@@ -1099,7 +1417,182 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
   })();
 </script>
 
+<script>
+  // Loads Leaflet and the map only when the Map tab is first opened.
+  import type { Map as LeafletMap } from "leaflet";
+  import type { MapPoint } from "../lib/map";
+
+  let mapReady: Promise<LeafletMap> | null = null;
+
+  document.addEventListener("viewchange", (e) => {
+    if ((e as CustomEvent<string>).detail !== "map") return;
+    const el = document.getElementById("map")!;
+    if (!mapReady) {
+      const points: MapPoint[] = JSON.parse(el.dataset.points ?? "[]");
+      mapReady = import("../lib/map").then(({ initMap }) =>
+        initMap(el, points, (p) =>
+          document.dispatchEvent(
+            new CustomEvent("open-photos", { detail: p }),
+          ),
+        ),
+      );
+    } else {
+      // The window may have been resized while the tab was hidden.
+      mapReady.then((map) => map.invalidateSize());
+    }
+  });
+</script>
+
 <style>
+  /* ----- Life list ----- */
+  .life-intro {
+    margin: 0 0 1.25rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .life-group {
+    margin: 0 0 1.75rem;
+  }
+  .life-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--serif);
+    font-size: 1.25rem;
+    font-weight: 600;
+  }
+  .life-heading-count {
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    font-weight: 600;
+    min-width: 2.6rem;
+    padding: 0.15rem 0.8rem;
+    text-align: center;
+    color: var(--muted);
+    background: var(--chip);
+    mask: url("/nature/leaf-badge.svg") center / 100% 100% no-repeat;
+  }
+  .life-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 0.5rem;
+  }
+  .life-list > li {
+    display: flex;
+  }
+  .life-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.45rem 0.75rem 0.45rem 0.45rem;
+    text-align: left;
+    font: inherit;
+    color: var(--fg);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: zoom-in;
+    transition:
+      border-color 0.15s,
+      transform 0.15s;
+  }
+  .life-row:hover {
+    border-color: var(--muted);
+    transform: translateY(-1px);
+  }
+  .life-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .life-row img {
+    flex-shrink: 0;
+    align-self: flex-start;
+    width: 56px;
+    height: 56px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: var(--leaf-outline) center / 26px no-repeat var(--thumb);
+  }
+  .life-names {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .life-common {
+    line-height: 1.3;
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 0.98rem;
+  }
+  .life-sci {
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  .life-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.2rem;
+  }
+  .life-status,
+  .life-captive {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 0.05rem 0.7rem;
+  }
+  .life-status {
+    background: var(--chip);
+    color: var(--fg);
+    mask: url("/nature/leaf-badge.svg") center / 100% 100% no-repeat;
+  }
+  .life-status[data-status="endemic"] {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .life-captive {
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .life-meta {
+    margin-top: 0.15rem;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ----- Map ----- */
+  .map {
+    height: min(70vh, 640px);
+    min-height: 380px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    /* Keep Leaflet's internal z-indexes from competing with the lightbox. */
+    isolation: isolate;
+  }
+  .map-note {
+    margin: 0.75rem 0 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+  @media (max-width: 600px) {
+    .map {
+      height: 60vh;
+      min-height: 340px;
+    }
+  }
+
   /* ----- Stats strip ----- */
   .stats {
     display: grid;
@@ -1418,6 +1911,19 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     gap: 0.4rem;
     margin-top: 0.75rem;
   }
+  /* Orders within the picked group: a smaller, indented second row. */
+  .subchips {
+    margin-top: 0.5rem;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--border);
+  }
+  .subchips[hidden] {
+    display: none;
+  }
+  .subchips .chip {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.65rem;
+  }
   .chip {
     font: inherit;
     font-size: 0.85rem;
@@ -1500,10 +2006,18 @@ const mosaicTiles = tileIndices.map((idx, i) => ({
     color: var(--muted);
     padding: 0.4rem 1.15rem;
     border-radius: 999px;
+    white-space: nowrap;
     cursor: pointer;
     transition:
       background 0.15s,
       color 0.15s;
+  }
+  @media (max-width: 480px) {
+    /* Four views have to fit across a phone. */
+    .view-btn {
+      padding: 0.4rem 0.75rem;
+      font-size: 0.92rem;
+    }
   }
   .view-btn:hover {
     color: var(--fg);

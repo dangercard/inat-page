@@ -32,6 +32,7 @@ export interface Taxon {
   introduced?: boolean;
   threatened?: boolean;
   wikipedia_url?: string | null;
+  ancestor_ids?: number[];
   // Total observations of this taxon across iNaturalist.
   observations_count?: number;
 }
@@ -49,6 +50,10 @@ export interface Observation {
   time_observed_at: string | null;
   species_guess: string | null;
   place_guess: string | null;
+  // "lat,lng". For obscured observations this is a random point within
+  // ~30 km of the real spot, so it isn't useful for mapping.
+  location: string | null;
+  obscured?: boolean;
   quality_grade: string;
   taxon: Taxon | null;
   photos: Photo[];
@@ -119,6 +124,29 @@ export async function fetchAllObservations(userLogin: string): Promise<Observati
   }
 
   return all;
+}
+
+export interface TaxonSummary {
+  id: number;
+  name: string;
+  preferred_common_name?: string;
+}
+
+// Looks up which of the given taxon ids are orders (e.g. Coleoptera), in
+// batches small enough to keep the request URL short.
+export async function fetchOrders(ids: number[]): Promise<Map<number, TaxonSummary>> {
+  const orders = new Map<number, TaxonSummary>();
+  for (let i = 0; i < ids.length; i += 150) {
+    const batch = ids.slice(i, i + 150).join(",");
+    const res = await fetchWithRetry(
+      `${API_BASE}/taxa?id=${batch}&rank=order&per_page=200`,
+      { headers: { "User-Agent": "bio-page" } },
+    );
+    if (!res.ok) throw new Error(`iNaturalist API ${res.status}: ${await res.text()}`);
+    const { results } = (await res.json()) as { results: TaxonSummary[] };
+    for (const t of results) orders.set(t.id, t);
+  }
+  return orders;
 }
 
 // Annotations come back as bare ids; this resolves them to labels such as
