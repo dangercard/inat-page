@@ -137,6 +137,16 @@ const { title } = Astro.props;
         position: relative;
         z-index: 1;
       }
+      /* Above the vine border (z-index 2) so the logo tooltip isn't covered. */
+      .masthead > .inat-link {
+        z-index: 3;
+      }
+      /* No hover on touch screens; a tap just follows the link. */
+      @media (hover: none) {
+        .inat-link::after {
+          display: none;
+        }
+      }
       /* Vine wrapped around the panel, centred on its edge. Drawn on its own
          layer because border-image would square off the panel's corners. */
       .masthead::after {
